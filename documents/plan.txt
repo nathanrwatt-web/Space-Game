@@ -1,0 +1,274 @@
+==============================================================
+ SPACE GAME — PROJECT PLAN (TIGHT REFERENCE)
+ Hybrid build: game on Bevy + custom floating-origin / orbital
+ showpiece, incl. chaotic multi-star systems
+==============================================================
+
+--------------------------------------------------------------
+1. STRATEGIC DIRECTION
+--------------------------------------------------------------
+Build the game on the Bevy engine (Rust). Hand-build the engine
+subsystems that are both the resume showpiece and the game's
+defining tech: the f64 floating-origin spatial layer, orbital
+math, and a chaotic multi-star (N-body) integrator (instead of
+the off-the-shelf big_space crate). Everything generic (ECS,
+rendering pipeline, assets, UI framework, windowing) comes from
+Bevy so the solo timeline stays survivable. Custom subsystems
+are scoped like the CHIP-8 emulator: bounded, spec-driven,
+finishable.
+
+
+==============================================================
+2. DESIRES / GOAL AREAS
+==============================================================
+
+2.1 COLONIZATION ECONOMY (the core)
+  - Multiple resources feeding a DEEP, multi-stage production
+    tree.
+  - Synergistic effects: "globalization" (connected colonies
+    reinforce each other) and general buffs emerging from
+    production scale/variety.
+  - Resources are FINITE, capped by amount -> efficiency and
+    optimization become the central skill, not infinite growth.
+  - Expansion opens new resource opportunity (the pull outward).
+  - Distance has cost: farther travel/supply is expensive until
+    the right technology reduces it (the tech gate on expansion).
+
+2.2 TECHNOLOGY (hard sci-fi)
+  - Hard-SF focus: large/mega-structures, THEORETICAL FTL,
+    and undiscovered phenomena (extra dimensions, an unknown
+    grand unifying theory) treated as late-game frontiers.
+  - Research is SYNERGISTIC: a breakthrough in one area seeds
+    progress in others (a graph, not isolated lines).
+  - Limited focus capacity: cannot research everything at once;
+    prioritization is a strategic decision.
+  - Ethics & internal issues attach to research; "dark forest"
+    danger: certain research can attract hostile attention.
+
+2.3 ANTAGONISTS / THREATS
+  - Resource limitation (the baseline, ever-present pressure).
+  - Alien life: inter-dimensional, inter-spatial, and temporal
+    (remnants from different times / dead civilizations).
+  - Natural disasters (stellar, planetary, system-scale).
+  - Heat death: a long-horizon entropy endgame clock.
+  - Internal strife / politics within the player's civilization.
+
+2.4 STORY
+  - Well-researched, grounded storylines.
+  - Events SEEDED AT GAME START so each playthrough has its own
+    latent arcs: alien infiltration, civil wars, unnatural
+    discoveries, Fermi-paradox scenarios.
+  - In-depth minor arcs beneath the main threads.
+
+2.5 SCALE / SIMULATION (miscellaneous)
+  - Potentially MANY things simulated at once; architecture must
+    assume entity counts grow over a playthrough.
+  - Automated management becomes NECESSARY once player territory
+    outgrows manual control (a designed late-game system, not a
+    convenience afterthought).
+
+2.6 SYSTEM DIVERSITY / MULTI-STAR  
+  - MOST systems: one dominant star -> stable, predictable orbits
+    (cheap Kepler rails, free time-warp).
+  - SOME systems: 2-3 comparable stars (binary / trinary) ->
+    CHAOTIC, non-periodic orbits (the three-body problem). No
+    closed-form solution; must be numerically integrated.
+  - "Chaotic," NOT "random": computation stays deterministic and
+    reproducible (same initial state + integrator + timestep ->
+    same trajectory) so saves/reloads/replays work. The orbits
+    only FEEL unpredictable (sensitive to initial conditions).
+  - Thematic payoff: unstable suns, shifting habitability,
+    ejection events, danger -> a distinct kind of frontier.
+
+2.7 GRAPHICS PRIORITIES
+  - Stellar bodies & solar phenomena are rare but must be
+    rendered beautifully; this is the explicit AESTHETIC
+    priority of the project.
+  - Economy GUI: elegant and uncomplicated above all.
+  - Bodies, ships, stations, constructions may need rendering
+    EN MASSE (instanced/batched).
+
+--------------------------------------------------------------
+3. ENGINE STRATEGY
+--------------------------------------------------------------
+STACK: Bevy (engine) + glam DVec3/DQuat (f64 sim math) +
+rayon (heavy parallel systems) + bevy_egui (dense GUI tooling)
++ custom WGSL shaders (stellar bodies) later.
+
+BEVY PROVIDES (do NOT rebuild):
+- Mature parallel ECS + automatic system scheduler.
+- Render graph over wgpu; instanced/batched rendering (mass
+  entities: ships, stations, constructions).
+- Transform hierarchy + propagation.
+- Asset pipeline with hot-reload.
+- Windowing/input (winit), WGSL shader handling, scene
+  serialization, plugin architecture, audio, UI base.
+
+YOU BUILD (showpiece + the game's interesting parts):
+- f64 floating-origin spatial layer.
+- Two-tier orbital model:
+    * Kepler rails  -> single-star systems (most). Analytic,
+      stable, instant position at any time = FREE time-warp.
+    * N-body integration -> chaotic multi-star systems (some).
+      Stepwise, energy-conserving, reproducible chaos.
+- Custom stellar/solar shaders + instanced render pass (GPU
+  learning track, bounded).
+- All gameplay systems (economy, tech, events, antagonists).
+
+PRECISION RULE: authoritative positions live in f64 (DVec3) in
+the sim layer; convert to f32 Transforms only at the floating-
+origin boundary for rendering. Never let f32 leak into sim state.
+
+TIME-WARP TENSION (key cost): Kepler systems jump to any time
+instantly; N-body systems CANNOT and must integrate every step.
+Mitigated because multi-star systems are RARE and small N (2-3
+stars + a few bodies), so total integration cost is bounded.
+Cap the per-frame substep budget for chaotic systems during
+extreme fast-forward.
+
+==============================================================
+ SPEC CARDS  (Scope / Build / Done / Milestones)
+==============================================================
+Each system is a bounded sub-project. "Done" = the gate that
+lets the next system start.
+
+--------------------------------------------------------------
+A. CUSTOM ENGINE SUBSYSTEMS (from scratch)
+--------------------------------------------------------------
+
+[A1] FLOATING-ORIGIN SPATIAL SYSTEM            (custom showpiece)
+  Scope:  Solar-to-interstellar distances without f32 precision
+          loss; recenter render space on the camera.
+  Build:  Integer grid-cell coords (i64) + f32 local offset per
+          entity. Camera defines active origin; convert grid+
+          local -> camera-relative f32 each frame.
+  Done:   Mesh at billions of km renders jitter-free; moving the
+          camera across the system shows no drift.
+  Mile:   M1 grid/local types + arithmetic + tests ->
+          M2 camera-relative conversion -> M3 jitter-free demo.
+
+[A2] KEPLER ORBITS (single-star, on-rails)      (custom)
+  Scope:  Default for MOST systems; analytic position at any
+          time -> free time-warp, deterministic.
+  Build:  OrbitalElements (a, e, i, lon-asc-node, arg-peri,
+          mean-anomaly-at-epoch) in f64. time -> mean ->
+          eccentric (Newton-Raphson) -> true anomaly -> DVec3
+          in parent frame. Nested parents (star->planet->moon).
+  Done:   Small system propagates under fast-forward;
+          global_position() walks parents in f64; deterministic.
+  Mile:   M1 element types + Kepler solver + tests ->
+          M2 parent-frame nesting -> M3 time-warp verified.
+
+[A3] N-BODY CHAOTIC MULTI-STAR SYSTEMS    (custom 2nd showpiece)
+  Scope:  2-3 comparable stellar masses + their bodies; chaotic,
+          non-periodic orbits. Applies to the MINORITY of
+          systems flagged multi-star at world gen.
+  Build:  Numerical integration of Newtonian gravity. Energy-
+          conserving integrator (velocity-Verlet / leapfrog
+          baseline; upgrade to Hermite or Wisdom-Holman if
+          accuracy demands). f64 state (DVec3 position+velocity).
+          Softening term to avoid singularities on close pass.
+          Small fixed timestep; substep budget per frame.
+  Determinism: REPRODUCIBLE chaos, not RNG. Same initial state +
+          integrator + timestep -> identical trajectory. Required
+          for save/load and replays.
+  Done:   A trinary system runs long sim-time with NO energy
+          blow-up, orbits visibly non-periodic, and reproduces
+          identically across save/load.
+  Mile:   M1 2-body integrator + energy-conservation check ->
+          M2 3-body + softening (chaotic, stable numerics) ->
+          M3 reproducible save/load + time-warp substep policy.
+  Fallback: if integration proves too costly/unstable for the
+          timeline, approximate multi-star systems as a stable
+          binary on Kepler rails so the game still ships.
+
+[A4] STELLAR RENDERING + INSTANCING       (custom, GPU track)
+  Scope:  Few but beautiful stars/planets; many cheap entities
+          drawn en masse.
+  Build:  Custom WGSL shaders (atmosphere/star surface) plugged
+          into Bevy render graph; instanced pass for ships/
+          stations; log depth buffer for scale range.
+  Done:   One gorgeous lit planet + 1000s of instanced markers
+          at stable frame rate, no z-fighting across scales.
+  Mile:   M1 learn wgpu in Bevy -> M2 planet/star shader ->
+          M3 instanced mass pass + log depth.
+
+--------------------------------------------------------------
+B. GAME SYSTEMS (built on Bevy ECS)
+--------------------------------------------------------------
+
+[B1] ECONOMY / RESOURCE SIMULATION              (core product)
+  Scope:  Deep production tree, synergy/globalization buffs,
+          finite resources, distance-cost of expansion.
+  Build:  ECS components (resource stocks, production nodes,
+          recipes) + tick systems. Data-driven recipe/tree defs.
+  Done:   Multi-stage chain runs, buffs apply, caps bind,
+          expansion changes cost; tunable without recompiling.
+  Mile:   M1 single chain -> M2 synergy/caps -> M3 distance cost.
+
+[B2] RESEARCH / TECH TREE                        (Bevy)
+  Scope:  Synergistic breakthroughs, limited focus, hard-SF gates
+          (megastructures, theoretical FTL, hidden unifications),
+          ethics / dark-forest flags.
+  Build:  Data-driven tech graph; one unlock seeds others;
+          capacity limits parallel research.
+  Done:   Tree authorable in data; cross-unlock synergy fires;
+          focus cap enforced.
+  Mile:   M1 linear tree -> M2 synergy edges -> M3 focus limits.
+
+[B3] EVENT & STORY ENGINE                        (Bevy)
+  Scope:  Seeded-at-start events + branching minor arcs (alien
+          infiltration, civil war, Fermi/dark-forest triggers).
+  Build:  Data-driven condition -> event -> consequence system
+          reading game state; seed at world gen.
+  Done:   Seeded events fire on conditions; a minor arc branches
+          across multiple steps.
+  Mile:   M1 condition->effect -> M2 seeded timeline -> M3 branching.
+
+[B4] ANTAGONIST SIMULATION                       (Bevy)
+  Scope:  Scarcity pressure, inter-dimensional/temporal aliens,
+          disasters, internal politics, heat-death clock.
+  Build:  Slow background sims + event-engine consumers; endgame
+          entropy timer.
+  Done:   At least one threat actor + heat-death clock affect
+          play measurably.
+  Mile:   M1 scarcity pressure -> M2 one alien actor -> M3 endgame clock.
+
+[B5] MANAGEMENT GUI                              (bevy_egui)
+  Scope:  Elegant, uncomplicated economy/colony management.
+  Build:  bevy_egui panels reading sim state; iterate on clarity.
+  Done:   Player runs the full economy loop via GUI without
+          confusion.
+  Mile:   M1 read-only dashboards -> M2 interactive controls -> M3 polish.
+
+[B6] AUTOMATION LAYER                             (Bevy, last)
+  Scope:  Rule/policy-based delegation when territory outgrows
+          manual control.
+  Build:  Player-configured rules acting on existing systems.
+  Done:   A configured policy runs a colony hands-off correctly.
+  Mile:   M1 single rule -> M2 policy sets -> M3 multi-colony.
+
+==============================================================
+ BUILD ORDER (gates)
+==============================================================
+1. A1 floating-origin + A2 Kepler core   (the spine; headless-ish)
+2. B1 Economy loop                        (prove the game is fun)
+3. B2 Tech tree
+4. A3 N-body chaotic multi-star systems   (defining feature +
+   2nd showpiece; sequenced AFTER fun-proof for risk reasons,
+   isolated so it can slip without sinking the project)
+5. B3 Event/story engine
+6. B4 Antagonists
+7. A4 Stellar rendering + instancing      (visual payoff)
+8. B5 GUI  (iterate alongside from B1 on)
+9. B6 Automation  (last)
+
+GATE RULES:
+- A1+A2 must be correct (jitter-free, deterministic) and B1 must
+  be FUN before anything downstream matters.
+- The game must be fully playable on KEPLER-ONLY systems before
+  A3 is attempted; A3 is isolated so N-body difficulty cannot
+  block shipping (Kepler-binary fallback exists).
+- If the custom spine stalls entirely, big_space is the fallback
+  for the floating-origin layer.
+==============================================================

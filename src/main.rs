@@ -1,8 +1,27 @@
 mod world_pos; 
 
 use world_pos::WorldPos;
-use bevy::prelude::*;
-use bevy::math::{DVec3, DQuat};
+use bevy::{
+    math::{DVec3, DQuat},
+    prelude::*
+};
+
+#[derive(Component)]
+struct CamLook {
+    rate: f32, 
+    responsiveness: f32, 
+    ang_vel: Vec3,
+}
+
+impl Default for CamLook {
+    fn default() -> Self {
+        Self {
+            rate: 1.5,
+            responsiveness: 10.0,
+            ang_vel: Vec3::ZERO,
+        }
+    }
+}
 
 fn main() {
    App::new()
@@ -43,6 +62,7 @@ fn setup(
             Camera3d::default(),
             Transform::default(),
             WorldPos::new(FAR, 0.0, 50.0),
+            CamLook::default(),
     ));
 }
 
@@ -65,13 +85,29 @@ fn move_camera(
 fn rotate_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut cam: Single<&mut Transform, With<Camera>>,
+    mut cam: Single<(&mut Transform, &mut CamLook), With<Camera>>,
 ) {
-    let turn_speed = 1.5; // radians/sec — tune to taste
-    let mut yaw = 0.0;
-    if keys.pressed(KeyCode::KeyQ) { yaw += 1.0; } // turn left
-    if keys.pressed(KeyCode::KeyE) { yaw -= 1.0; } // turn right
-    cam.rotate_y(yaw * turn_speed * time.delta_secs());
+    let (transform, look) = &mut *cam;
+    let dt = time.delta_secs();
+
+    let mut input = Vec3::ZERO;
+    if keys.pressed(KeyCode::KeyV) { input.x += 1.0; } // pitch 
+    if keys.pressed(KeyCode::KeyC) { input.x -= 1.0; } // pitch 
+    if keys.pressed(KeyCode::KeyQ) { input.y += 1.0; } // yaw
+    if keys.pressed(KeyCode::KeyE) { input.y -= 1.0; } // yaw
+    if keys.pressed(KeyCode::KeyF) { input.z += 1.0; } // roll 
+    if keys.pressed(KeyCode::KeyG) { input.z -= 1.0; } // roll
+
+    // where we are going 
+    let target = input * look.rate;
+    // how much of the gap between heree and target we will close 
+    // uses 1 - e^(-k * dt) to make it frame independent 
+    let t = 1.0 - (-look.responsiveness * dt).exp();
+    // moves a fraction t of the way towards target 
+    look.ang_vel = look.ang_vel.lerp(target, t);
+
+    let delta = Quat::from_scaled_axis(look.ang_vel * dt);
+    transform.rotation = (transform.rotation * delta).normalize();
 }
 
 fn sync_render_space(

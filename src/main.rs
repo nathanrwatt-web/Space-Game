@@ -1,4 +1,5 @@
 mod world_pos; 
+mod orbital_elements;
 
 use world_pos::WorldPos;
 use bevy::{
@@ -69,8 +70,9 @@ fn setup(
 fn move_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut cam: Single<&mut WorldPos, With<Camera>>,
+    mut cam: Single<(&mut WorldPos, &Transform), With<Camera>>,
 ) {
+    let (world_pos, transform) = &mut *cam;
     let mut dir = DVec3::ZERO;
     if keys.pressed(KeyCode::KeyW) { dir.z -= 1.0; }
     if keys.pressed(KeyCode::KeyS) { dir.z += 1.0; }
@@ -78,8 +80,12 @@ fn move_camera(
     if keys.pressed(KeyCode::KeyD) { dir.x += 1.0; }
     if keys.pressed(KeyCode::Space) { dir.y += 1.0; }
     if keys.pressed(KeyCode::ShiftLeft) { dir.y -= 1.0; }
+
+    // take the rotation quaternion  and multimply by dir vector to get new direciton 
+    let world_dir = transform.rotation.as_dquat() * dir.normalize_or_zero();  
     let speed = 15.0; // m/s — tune wildly later
-    cam.0 += dir * speed * time.delta_secs() as f64;
+    // the only f32 is time and casting up will keep accuracy of world_pos 
+    world_pos.0 += world_dir * speed * time.delta_secs() as f64; 
 }
 
 fn rotate_camera(

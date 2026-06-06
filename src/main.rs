@@ -1,9 +1,13 @@
 mod world_pos; 
 mod orbital_elements;
+mod orbit;
+mod clock;
 
+use orbit::propagate_orbits;
+use clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
 use bevy::{
-    math::{DVec3, DQuat},
+    math::DVec3,
     prelude::*
 };
 
@@ -34,6 +38,8 @@ fn main() {
            ..default()
        }))
        .add_systems(Startup, setup)
+       .init_resource::<SimClock>()
+       .add_systems(Update, (warp_keys, advance_clock, propagate_orbits).chain())
        .add_systems(Update, (move_camera, rotate_camera))
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        .run();

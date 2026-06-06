@@ -57,6 +57,7 @@ fn setup(
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
             Transform::default(),
             WorldPos::ORIGIN,
+            Focusable{},
     )).id();
 
     // Orbital Elements {

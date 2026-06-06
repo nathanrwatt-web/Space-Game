@@ -3,13 +3,15 @@ mod orbital_elements;
 mod orbit;
 mod clock;
 
-use orbit::propagate_orbits;
+use orbit::{Orbit, propagate_orbits};
 use clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
 use bevy::{
     math::DVec3,
     prelude::*
 };
+
+use crate::orbital_elements::OrbitalElements;
 
 #[derive(Component)]
 struct CamLook {
@@ -52,23 +54,65 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let day: f64 = 60.0 * 60.0 * 24.0;
+
     commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(5.0))),
+        PointLight { shadows_enabled: true, ..default() },
+        Transform::default(),
+        WorldPos::new(120.0, 120.0, 120.0)
+        )
+    );
+
+    // STAR  - no orbit, fixed position - entity id 
+    let star = commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(20.0))),
+            MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
+            Transform::default(),
+            WorldPos::ORIGIN,
+    )).id();
+
+    // Orbital Elements {
+    //  a: Longest Axis,
+    //  e: Eccentricicty, 
+    //  i: Inclination,
+    //  lan: longitiude of ascending node ,
+    //  arg_pe: Argument of periapsis,
+    //  m0: Mean anomaly at epoch,
+    //  epoch: t_0,
+    //  mu: G x M of parent
+    // }
+    let planet = commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(8.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.4, 0.6, 1.0))),
             Transform::default(),
-            WorldPos::new(FAR, 0.0, 0.0),
-    ));
+            WorldPos::ORIGIN,
+            Orbit {
+                elements: OrbitalElements::new(
+                    200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, mu_for_period(200.0, 8.0 * day)),
+                parent: star,
+            },
+    )).id();
 
+    // moon 
     commands.spawn((
-            PointLight { shadows_enabled: true, ..default() },
-            Transform::default(),
-            WorldPos::new(FAR, 30.0, 30.0),
+        Mesh3d(meshes.add(Sphere::new(3.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.7))),
+        Transform::default(),
+        WorldPos::ORIGIN,
+        Orbit {
+            elements: OrbitalElements::new(
+                40.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0,
+                mu_for_period(40.0, 2.0 * day),         // mu = PLANET's G·M
+            ),
+            parent: planet,
+        },
     ));
 
+    // camera 
     commands.spawn((
             Camera3d::default(),
             Transform::default(),
-            WorldPos::new(FAR, 0.0, 50.0),
+            WorldPos::new(0.0, 120.0, 450.0),
             CamLook::default(),
     ));
 }
@@ -130,4 +174,11 @@ fn sync_render_space(
     for (pos, mut transform) in &mut bodies {
         transform.translation = pos.to_render_space(origin); // subtract in f64, then cast
     }
+}
+
+
+// helper 
+fn mu_for_period(a: f64, period: f64) -> f64 {
+    let n = std::f64::consts::TAU / period;
+    n * n * a.powi(3)
 }

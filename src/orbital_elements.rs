@@ -36,13 +36,6 @@ pub(crate) struct OrbitalElements {
 }
 
 impl OrbitalElements {
-
-    // for checking values 
-    pub(crate) fn new(a: f64, e: f64, i: f64, lan: f64, arg_pe: f64, m0: f64, epoch: f64, mu: f64) -> Self {
-        debug_assert!(e < 1.0, "Orbit is not bound!");
-        debug_assert!(a >= 0.0, "Semi major axis is negative!");
-        Self { a, e, i, lan, arg_pe, m0, epoch, mu }
-    }
     // see Proposition 5 
     fn mean_motion(&self) -> f64 {
         // mean motion is given by G·M / a^{3/2 }

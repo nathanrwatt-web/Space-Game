@@ -1,4 +1,3 @@
-use bevy::core_pipeline::oit::resolve;
 use bevy::prelude::*;
 use bevy::math::DVec3;
 use std::collections::HashMap;
@@ -8,14 +7,12 @@ use crate::world_pos::WorldPos;
 use crate::orbital_elements::OrbitalElements;
 
 
-
 #[derive(Component)] 
 pub struct Orbit {
     pub elements: OrbitalElements, // math of the specific orbit 
     pub parent: Entity, // id of what it orbits 
 }
 // note: we keep track of the paretn ourself since the bevy ChildOf works in f32
-
 
 pub fn propagate_orbits(
     clock: Res<SimClock>,
@@ -56,7 +53,6 @@ pub fn propagate_orbits(
     // an ownable iter() of the values 
 }
 
-
 // recursive solver to get offset 
 fn resolve(
     e: Entity, 
@@ -81,4 +77,3 @@ fn resolve(
     world.insert(e, pos);
     pos
 }
-

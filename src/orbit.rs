@@ -26,6 +26,11 @@ pub struct Maneuvers {
     pub queue: VecDeque<Burn>,
 }
 
+#[derive(Component)]
+pub struct Body {
+    pub mu: f64,
+}
+
 pub fn propagate_orbits(
     clock: Res<SimClock>,
     orbiters: Query<(Entity, &Orbit)>, // every orbiting object
@@ -35,10 +40,13 @@ pub fn propagate_orbits(
     let t = clock.t;
     
     // offsets of each item to be used later 
-    let offsets: HashMap<Entity, (DVec3, Entity)> = orbiters
+    let locals: HashMap<Entity, (DVec3, DVec3, Entity)> = orbiters
         .iter()
-        // map each element to the offset given by its orbit 
-        .map(|(e, o)| (e, (o.elements.offset_at(t), o.parent))) 
+        // map each element to new (position, velocity, parent)
+        .map(|(e, o)| {
+            let (pos, vel) = o.elements.state_vectors_at(t);
+            (e, (pos, vel , o.parent))
+        })
         .collect();
 
     // position of each entity wihthout orbit
@@ -49,20 +57,12 @@ pub fn propagate_orbits(
         .collect();
     
     // checking for previous computation
-    let mut world: HashMap<Entity, DVec3> = HashMap::new();
-    for e in offsets.keys().copied().collect::<Vec<_>>() {
-        resolve(e, &offsets, &root_pos, &mut world);
-    }
+    let mut cache: HashMap<Entity, (DVec3, DVec3)> = HashMap::new();
 
-    // for each entity and its world position, 
-    // if the total offset has been calculated by reolse, update position 
+    // for each entity and its world position update its world position 
     for (e, mut wp) in &mut writeback {
-        if let Some(&p) = world.get(&e) {
-            wp.0 = p;
-        }
+        wp.0 = absolute_state(e, &locals, &root_pos, &mut cache).0;
     }
-    // note: .copied() is used to transfer the references to keys to 
-    // an ownable iter() of the values 
 }
 
 pub fn draw_orbits(
@@ -103,27 +103,27 @@ pub fn execute_maneuvers(
     }
 }
 
-// recursive solver to get offset 
-fn resolve(
+// absoulte (pos, vel) by summing local vectors up the parent chain 
+pub(crate) fn absolute_state(
     e: Entity, 
-    offsets: &HashMap<Entity, (DVec3, Entity)>,
-    root_pos: &HashMap<Entity, DVec3>,
-    world: &mut HashMap<Entity, DVec3>,
-) -> DVec3 {
+    locals: &HashMap<Entity, (DVec3, DVec3, Entity)>, // pos, vel, parent 
+    roots: &HashMap<Entity, DVec3>, 
+    cache: &mut HashMap<Entity, (DVec3, DVec3)>,
+) -> (DVec3, DVec3) {
 
     // check to see if the entity has been computed
-    if let Some(&p) = world.get(&e) { return p; }
+    if let Some(&s) = cache.get(&e) { return s; }
 
-    // the position is offset + parent offset + ... 
-    let pos = match offsets.get(&e) {
-        Some(&(offset, parent)) => {
-            resolve(parent, offsets, root_pos, world) + offset
+    let state = match locals.get(&e) {
+        Some(&(local_position, local_velocity, parent)) => {
+            let (parent_position, parent_velocity) = absolute_state(parent, locals, roots, cache);
+            (parent_position + local_position, parent_velocity + local_velocity)
         },
-        None => {
-            root_pos.get(&e).copied().unwrap_or(DVec3::ZERO)
+        None => { 
+            (roots.get(&e).copied().unwrap_or(DVec3::ZERO), DVec3::ZERO)
         },
     };
 
-    world.insert(e, pos);
-    pos
+    cache.insert(e, state);
+    state
 }

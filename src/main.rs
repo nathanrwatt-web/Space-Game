@@ -5,9 +5,14 @@ mod clock;
 mod camera; 
 mod body_traits;
 mod transfer;
+mod soi;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use orbit::{Orbit, propagate_orbits, draw_orbits, execute_maneuvers, Maneuvers, Burn};
+use orbit::{
+    Orbit, Maneuvers, Burn, Body, 
+    propagate_orbits, draw_orbits, execute_maneuvers,
+};
+use soi::{draw_soi, update_soi};
 use clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
 use body_traits::Focusable;
@@ -33,13 +38,9 @@ fn main() {
        .init_resource::<SimClock>()
        // order is important: change time warp -> add time -> calculate orbits -> update camera 
        .add_systems(Update, (
-               warp_keys,
-               advance_clock,
-               debug_burn_key,
-               execute_maneuvers,
-               propagate_orbits,
-               orbit_camera,
-               draw_orbits
+               warp_keys, advance_clock, debug_burn_key,
+               execute_maneuvers, update_soi, propagate_orbits,
+               orbit_camera, draw_orbits, draw_soi,
             ).chain())
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
@@ -54,6 +55,10 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let day: f64 = 60.0 * 60.0 * 24.0;
+    let mu_star:  f64 = mu_for_period(160.0, 8.0 * day);
+    let mu_earth: f64 = mu_for_period(100.0, 8.0 * day);
+    let mu_moon:  f64 = mu_for_period(20.0, 8.0 * day);
+
 
     commands.spawn((
         PointLight { shadows_enabled: true, ..default() },
@@ -67,6 +72,7 @@ fn setup(
             Mesh3d(meshes.add(Sphere::new(60.0))),
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
             Transform::default(),
+            Body{ mu: mu_star },
             WorldPos::ORIGIN,
             Focusable::default(),
     )).id();
@@ -86,7 +92,8 @@ fn setup(
             MeshMaterial3d(materials.add(Color::srgb(0.4, 0.6, 1.0))),
             Transform::default(),
             WorldPos::ORIGIN,
-            Focusable{ ships_can_orbit: true },
+            Focusable{},
+            Body { mu: mu_earth },
             Orbit {
                 elements: OrbitalElements {
                     a: 400.0,
@@ -96,7 +103,7 @@ fn setup(
                     arg_pe: 0.0,
                     m0: 0.0,
                     epoch: 0.0,
-                    mu: mu_for_period(200.0, 100.0 * day),
+                    mu: mu_star,
                 },
                 parent: star,
             },
@@ -108,7 +115,8 @@ fn setup(
         MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.7))),
         Transform::default(),
         WorldPos::ORIGIN,
-        Focusable{ ships_can_orbit: true },
+        Focusable{},
+        Body { mu: mu_moon },
         Orbit {
             elements: OrbitalElements {
                 a: 50.0, 
@@ -118,7 +126,7 @@ fn setup(
                 arg_pe: 0.0,
                 m0: 0.0,
                 epoch: 0.0,
-                mu: mu_for_period(40.0, 10.0 * day),
+                mu: mu_earth,
             },         // mu = PLANET's G·M
             parent: planet,
         },
@@ -140,7 +148,7 @@ fn setup(
                     arg_pe: 0.0, 
                     m0: 0.0,
                     epoch: 0.5, 
-                    mu: mu_for_period(200.0, 8.0 * day),
+                    mu: mu_star,
                 },
                 parent: star,
             },

@@ -47,24 +47,102 @@ impl OrbitalElements {
         TAU / self.mean_motion() 
     }
 
-    // given a time t, calculate the offset in position 
-    // returns the new position of an orbiting body after t seconds 
-    // from the frame of reference of the parent 
+    
     pub(crate) fn offset_at(&self, t: f64) -> DVec3 {
+        self.state_vectors_at(t).0
+    }
+
+    pub(crate) fn velocity_at(&self, t: f64) -> DVec3 {
+        self.state_vectors_at(t).1
+    }
+
+    // given a time t, calculate the offset in position and velocity 
+    // from reference frame of parent -> (new pos, velocity)
+    pub(crate) fn state_vectors_at(&self, t: f64) -> (DVec3, DVec3) {
+
+        let n = self.mean_motion();
         // mean anomaly at time t: M = M_0 + n · (t - t_0)
         let m = self.m0 + self.mean_motion() * (t - self.epoch);
         let ea = solve_kepler(m, self.e); // Eccentric anomaly 
 
-        // see Proposition 4 
-        let x = self.a * (ea.cos() - self.e);
-        let y = self.a * (1.0 - self.e * self.e).sqrt() * ea.sin(); // semi minor b = a * sqrt(1 - e^2) 
+        let (sin_e, cos_e) = (ea.sin(), ea.cos());
+        let b = self.a * (1.0 - self.e * self.e).sqrt(); // semi minor axis 
+    
+        // see Proposition 4
+        let new_pos = DVec3::new(self.a * (cos_e - self.e), b * sin_e, 0.0);
+
+        // see Proposition 6
+        let edot = n / (1.0 - self.e * cos_e); // derivative of Eccentric Anomaly 
+        // 0 change in non x-y plane because planar orbit 
+        let vel = DVec3::new(-self.a * sin_e, b * cos_e, 0.0) * edot;
+
         // rightmost applied first means spins by ω -> tilted by i -> swung by Ω
         let q = DQuat::from_rotation_z(self.lan)
-              * DQuat::from_rotation_x(self.i)
-              * DQuat::from_rotation_z(self.arg_pe);
-        q * DVec3::new(x, y, 0.0)
+            * DQuat::from_rotation_x(self.i)
+            * DQuat::from_rotation_z(self.arg_pe);
+
+        (q * new_pos, q * vel)
+    }
+
+    // see Proposition 7 
+    // reconstructs orbital elements from distance and velocity to parent 
+    pub(crate) fn from_state(r: DVec3, v: DVec3, mu: f64, epoch: f64) -> Self {
+        let r_mag = r.length();
+       
+        // angular momentum 
+        let h = r.cross(v);
+        let h_mag = h.length();
+
+        let node = DVec3::Z.cross(h);
+        let node_mag = node.length();
+
+        let e_vec = v.cross(h) / mu - r / r_mag;
+        let e = e_vec.length();
+
+        let energy = v.length_squared() / 2.0 - mu / r_mag;
+        let a = -mu / (2.0 * energy);
+        let i = (h.z / h_mag).clamp(-1.0, 1.0).acos();
+        let (lan, arg_pe) = if node_mag > 1e-9 {
+            let mut lan = (node.x / node_mag).clamp(-1.0, 1.0).acos();
+            if node.y < 0.0 {
+                lan = TAU - lan;
+            }
+            let mut arg_pe = (node.dot(e_vec) / (node_mag * e)).clamp(-1.0, 1.0).acos();
+            if e_vec.z < 0.0 { arg_pe = TAU - arg_pe; } (lan, arg_pe)
+        } else {
+            // equatorial (i ≈ 0): node vanishes. Pin Ω = 0 and fold the whole angle
+            // into ω = longitude of periapsis. (prograde assumed: h.z > 0)
+            (0.0, e_vec.y.atan2(e_vec.x).rem_euclid(TAU))
+        };
+
+        // true anomaly v -> eccentric anomaly E -> mean anomaly M 
+        let mut nu = (e_vec.dot(r) / (e * r_mag)).clamp(-1.0, 1.0).acos();
+
+        if r.dot(v) < 0.0 { nu = TAU - nu; }
+        
+        let ea = 2.0 * ((1.0 - e).sqrt() * (nu * 0.5).sin())
+            .atan2((1.0 + e).sqrt() * (nu * 0.5).cos());
+        let m0 = ea - e * ea.sin();
+
+        OrbitalElements {
+            a,
+            e,
+            i,
+            lan,
+            arg_pe,
+            m0,
+            epoch,
+            mu,
+        }
+    }
+
+    // constructs a new orbit given a change in velocity dv and time t
+    pub(crate) fn with_burn(&self, t: f64, dv: DVec3) -> OrbitalElements {
+        let (r, v) = self.state_vectors_at(t);
+        OrbitalElements::from_state(r, v + dv, self.mu, t)
     }
 }
+
 
 // see Proposition 2 
 fn solve_kepler(m: f64, e: f64) -> f64 { // mean Anomaly + eccentricity
@@ -82,7 +160,6 @@ fn solve_kepler(m: f64, e: f64) -> f64 { // mean Anomaly + eccentricity
     }
     ea // outputs Eccentric Anomaly
 }
-
 
 /* ===== MATH =====
  *
@@ -118,7 +195,30 @@ fn solve_kepler(m: f64, e: f64) -> f64 { // mean Anomaly + eccentricity
  *  revolution 
  *  Derivation comes from T = 2pi * sqrt (a^3 / GM )
  *  nT = 2pi so n = GM / sqrt(a^3)
- */ 
+ *
+ * Proposition 6 
+ *  E' = mean_motion / ( 1 - e * cos(E)) --- derivative of Keplers equation
+ *  vx = -a * sin(E) * E'                --- x-coord derivative 
+ *  vy = b * cos(E) * E'                 --- y-coord derivative 
+ *  q = angle vector 
+ *  Kv = q * (vx, vy, 0)
+ * 
+ * Proposition 7 
+ *  |r| = distance 
+ *  h = r.cross(v) := specific angular momentum 
+ *  h is fixed and perpendicular to the orbital plane
+ *  node = (0,0,1) x h = (-h_y, h_x, 0)
+ *  d/dt(v × h) = v̇ × h = (−μ/r³)[ r × (r × v) ]
+ *          = (−μ/r³)[ r(r·v) − v r² ]
+ *          = μ( v/r − (r·v) r / r³ )
+ *          = μ · d/dt( r / |r| ) 
+ *  specific energy = kinetic + potential 
+ *  ε = v²/2 − μ/r = μ/r − μ/(2a) − μ/r = −μ/(2a)
+ *  cos i = (h·ẑ)/|h| = h_z/|h|
+ *  cos Ω = node_x/|node|
+ *  cos ω = (node·e_vec)/(|node|·e)
+ *  tan(E/2) = √((1−e)/(1+e))·tan(ν/2)
+*/ 
 
 #[cfg(test)]
 mod tests {
@@ -197,6 +297,7 @@ mod tests {
         let years = el.period() / (365.25 * 86400.0);
         assert!((years - 1.0).abs() < 0.01, "got {years} yr"); // catches unit bugs
     }
+
 
     #[test]
     fn offset_is_deterministic() {
@@ -283,5 +384,94 @@ mod tests {
         let tilted = elements(1.5e11, 0.4, inc, 0.0, 0.0, 1.2);
         let expected = DQuat::from_rotation_x(inc) * flat.offset_at(0.0);
         assert!((tilted.offset_at(0.0) - expected).length() < 1.0);
+    }
+
+    #[test]
+    fn velocity_matches_finite_difference() {
+        let el = elements(1.5e11, 0.4, 0.3, 0.9, 0.6, 0.2);
+        let dt = 1.0;
+        for k in 1..20 {
+            let t = el.period() * k as f64 / 20.0;
+            let v_analytic = el.velocity_at(t);
+            let v_num = (el.offset_at(t + dt) - el.offset_at(t - dt)) / (2.0 * dt);
+            assert!((v_analytic - v_num).length() / v_num.length() < 1e-6,
+                    "t={t}: {v_analytic:?} vs {v_num:?}");
+        }
+    }
+
+    #[test]
+    fn velocity_magnitude_matches_vis_viva() {
+        let el = elements(1.5e11, 0.4, 0.3, 0.9, 0.6, 0.0);
+        for k in 1..20 {
+            let t = el.period() * k as f64 / 20.0;
+            let r = el.offset_at(t).length();
+            let v = el.velocity_at(t).length();
+            let v_vis = (el.mu * (2.0 / r - 1.0 / el.a)).sqrt();
+            assert!((v - v_vis).abs() / v_vis < 1e-9, "t={t}: {v} vs {v_vis}");
+        }
+    }
+
+    #[test]
+    fn from_state_round_trips() {
+        let el = elements(1.5e11, 0.4, 0.3, 0.9, 0.6, 0.2);   // inclined, generic
+        for k in 0..12 {
+            let t = el.period() * k as f64 / 12.0;
+            let (r, v) = el.state_vectors_at(t);
+            let el2 = OrbitalElements::from_state(r, v, el.mu, t);
+
+            let (r2, v2) = el2.state_vectors_at(t);
+            assert!((r - r2).length() < 1.0,  "pos mismatch at t={t}");
+            assert!((v - v2).length() < 1e-6, "vel mismatch at t={t}");
+
+            let t2 = t + 1.0e6;                                 // still locked together later
+            assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0, "drift at t={t}");
+        }
+    }
+
+    #[test]
+    fn from_state_round_trips_equatorial() {
+        let el = elements(1.5e11, 0.3, 0.0, 0.0, 0.7, 0.4);    // i = 0, like a ship
+        let t = el.period() * 0.37;
+        let (r, v) = el.state_vectors_at(t);
+        let el2 = OrbitalElements::from_state(r, v, el.mu, t);
+        let t2 = t + 2.0e6;
+        assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0);
+    }
+
+    #[test]
+    fn prograde_burn_raises_apoapsis() {
+        let el = elements(1.5e11, 0.0, 0.0, 0.0, 0.0, 0.0);   // circular
+        let t = el.period() * 0.25;
+        let (_r, v) = el.state_vectors_at(t);
+        let burned = el.with_burn(t, v.normalize() * 500.0);  // +500 m/s prograde
+
+        let apo_before = el.a * (1.0 + el.e);                 // = a for a circle
+        let apo_after  = burned.a * (1.0 + burned.e);
+        assert!(apo_after > apo_before + 1.0, "apoapsis didn't rise: {apo_before} -> {apo_after}");
+        // the burn point stays put → new periapsis ≈ old radius
+        assert!((burned.a * (1.0 - burned.e) - el.a).abs() < 1.0, "periapsis should pin to burn point");
+    }
+
+    #[test]
+    fn retrograde_burn_lowers_periapsis() {
+        let el = elements(1.5e11, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let t = el.period() * 0.6;
+        let (_r, v) = el.state_vectors_at(t);
+        let burned = el.with_burn(t, -v.normalize() * 500.0); // retrograde
+
+        let peri_before = el.a * (1.0 - el.e);
+        let peri_after  = burned.a * (1.0 - burned.e);
+        assert!(peri_after < peri_before - 1.0, "periapsis didn't drop: {peri_before} -> {peri_after}");
+    }
+
+    #[test]
+    fn burn_then_inverse_is_identity() {
+        let el = elements(1.5e11, 0.3, 0.4, 0.9, 0.6, 0.2);   // inclined → general branch
+        let t  = el.period() * 0.3;
+        let dv = DVec3::new(120.0, -80.0, 40.0);
+        let back = el.with_burn(t, dv).with_burn(t, -dv);     // there and back
+
+        let t2 = t + 1.0e6;                                    // same orbit ⇒ same trajectory
+        assert!((el.offset_at(t2) - back.offset_at(t2)).length() < 1.0, "burn + anti-burn drifted");
     }
 }

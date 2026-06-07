@@ -6,7 +6,7 @@ mod camera;
 mod focusable;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use orbit::{Orbit, propagate_orbits};
+use orbit::{Orbit, propagate_orbits, draw_orbits, execute_maneuvers, Maneuvers, Burn};
 use clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
 use focusable::Focusable;
@@ -25,12 +25,20 @@ fn main() {
                ..default()
            }),
            ..default()
-    }))
+        }))
        .add_plugins(MeshPickingPlugin)
        .add_systems(Startup, setup)
        .init_resource::<SimClock>()
        // order is important: change time warp -> add time -> calculate orbits -> update camera 
-       .add_systems(Update, (warp_keys, advance_clock, propagate_orbits, orbit_camera).chain())
+       .add_systems(Update, (
+               warp_keys,
+               advance_clock,
+               debug_burn_key,
+               execute_maneuvers,
+               propagate_orbits,
+               orbit_camera,
+               draw_orbits
+            ).chain())
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
        .add_observer(focus_on_click)
@@ -53,7 +61,7 @@ fn setup(
 
     // STAR  - no orbit, fixed position - entity id 
     let star = commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(20.0))),
+            Mesh3d(meshes.add(Sphere::new(60.0))),
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
             Transform::default(),
             WorldPos::ORIGIN,
@@ -71,21 +79,21 @@ fn setup(
     //  mu: G x M of parent
     // }
     let planet = commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(8.0))),
+            Mesh3d(meshes.add(Sphere::new(15.0))),
             MeshMaterial3d(materials.add(Color::srgb(0.4, 0.6, 1.0))),
             Transform::default(),
             WorldPos::ORIGIN,
             Focusable{},
             Orbit {
                 elements: OrbitalElements {
-                    a: 200.0,
+                    a: 400.0,
                     e: 0.0,
                     i: 0.0,
                     lan: 0.0,
                     arg_pe: 0.0,
                     m0: 0.0,
                     epoch: 0.0,
-                    mu: mu_for_period(200.0, 365.0 * day),
+                    mu: mu_for_period(200.0, 100.0 * day),
                 },
                 parent: star,
             },
@@ -93,24 +101,47 @@ fn setup(
 
     // moon 
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(3.0))),
+        Mesh3d(meshes.add(Sphere::new(5.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.7))),
         Transform::default(),
         WorldPos::ORIGIN,
         Focusable{},
         Orbit {
             elements: OrbitalElements {
-                a: 40.0, 
+                a: 50.0, 
                 e: 0.0,
-                i: 0.3,
+                i: 0.0,
                 lan: 0.0, 
                 arg_pe: 0.0,
                 m0: 0.0,
                 epoch: 0.0,
-                mu: mu_for_period(40.0, 30.0 * day),
+                mu: mu_for_period(40.0, 10.0 * day),
             },         // mu = PLANET's G·M
             parent: planet,
         },
+    ));
+
+    // ship 
+    commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(5.0))),
+            MeshMaterial3d(materials.add(Color::srgb(1.0, 0.3, 0.3))),
+            Transform::default(),
+            Focusable{},
+            WorldPos::ORIGIN,
+            Orbit {
+                elements: OrbitalElements {
+                    a: 160.0,
+                    e: 0.0, 
+                    i: 0.0, 
+                    lan: 0.0, 
+                    arg_pe: 0.0, 
+                    m0: 0.0,
+                    epoch: 0.5, 
+                    mu: mu_for_period(200.0, 8.0 * day),
+                },
+                parent: star,
+            },
+            Maneuvers::default(),
     ));
 
     // camera 
@@ -142,4 +173,19 @@ fn sync_render_space(
 fn mu_for_period(a: f64, period: f64) -> f64 {
     let n = std::f64::consts::TAU / period;
     n * n * a.powi(3)
+}
+
+// for testing
+pub fn debug_burn_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    clock: Res<SimClock>,
+    mut ships: Query<(&Orbit, &mut Maneuvers)>,
+) {
+    if !keys.just_pressed(KeyCode::KeyB) { return; }
+    for (orbit, mut maneuvers) in &mut ships {
+        let t = clock.t;
+        let v = orbit.elements.velocity_at(t);
+        let dv = v * 0.1;
+        maneuvers.queue.push_back(Burn { execute_at: t, dv });
+    }
 }

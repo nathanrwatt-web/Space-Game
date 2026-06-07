@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
 // to be used when a body is Focusable by the camera 
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct Focusable {
+    pub ships_can_orbit: bool,
 }
+

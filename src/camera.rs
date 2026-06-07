@@ -3,7 +3,7 @@ use bevy::math::{DVec3, DQuat};
 use bevy::input::mouse::AccumulatedMouseScroll;
 
 use crate::world_pos::WorldPos;
-use crate::focusable::Focusable;
+use crate::body_traits::Focusable;
 
 
 // ===== SETTINGS ===== 

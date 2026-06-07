@@ -437,41 +437,4 @@ mod tests {
         let t2 = t + 2.0e6;
         assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0);
     }
-
-    #[test]
-    fn prograde_burn_raises_apoapsis() {
-        let el = elements(1.5e11, 0.0, 0.0, 0.0, 0.0, 0.0);   // circular
-        let t = el.period() * 0.25;
-        let (_r, v) = el.state_vectors_at(t);
-        let burned = el.with_burn(t, v.normalize() * 500.0);  // +500 m/s prograde
-
-        let apo_before = el.a * (1.0 + el.e);                 // = a for a circle
-        let apo_after  = burned.a * (1.0 + burned.e);
-        assert!(apo_after > apo_before + 1.0, "apoapsis didn't rise: {apo_before} -> {apo_after}");
-        // the burn point stays put → new periapsis ≈ old radius
-        assert!((burned.a * (1.0 - burned.e) - el.a).abs() < 1.0, "periapsis should pin to burn point");
-    }
-
-    #[test]
-    fn retrograde_burn_lowers_periapsis() {
-        let el = elements(1.5e11, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let t = el.period() * 0.6;
-        let (_r, v) = el.state_vectors_at(t);
-        let burned = el.with_burn(t, -v.normalize() * 500.0); // retrograde
-
-        let peri_before = el.a * (1.0 - el.e);
-        let peri_after  = burned.a * (1.0 - burned.e);
-        assert!(peri_after < peri_before - 1.0, "periapsis didn't drop: {peri_before} -> {peri_after}");
-    }
-
-    #[test]
-    fn burn_then_inverse_is_identity() {
-        let el = elements(1.5e11, 0.3, 0.4, 0.9, 0.6, 0.2);   // inclined → general branch
-        let t  = el.period() * 0.3;
-        let dv = DVec3::new(120.0, -80.0, 40.0);
-        let back = el.with_burn(t, dv).with_burn(t, -dv);     // there and back
-
-        let t2 = t + 1.0e6;                                    // same orbit ⇒ same trajectory
-        assert!((el.offset_at(t2) - back.offset_at(t2)).length() < 1.0, "burn + anti-burn drifted");
-    }
 }

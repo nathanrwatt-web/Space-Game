@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 
 #[derive(Component)] 
 pub struct Orbit {
-    pub elements: OrbitalElements, // math of the specific orbit 
-    pub parent: Entity, // id of what it orbits 
+    pub(crate) elements: OrbitalElements, // math of the specific orbit 
+    pub(crate) parent: Entity, // id of what it orbits 
 }
 // note: we keep track of the paretn ourself since the bevy ChildOf works in f32
 

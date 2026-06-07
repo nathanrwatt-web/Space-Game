@@ -3,13 +3,15 @@ mod orbital_elements;
 mod orbit;
 mod clock;
 mod camera; 
-mod focusable;
+mod body_traits;
+mod transfer;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
 use orbit::{Orbit, propagate_orbits, draw_orbits, execute_maneuvers, Maneuvers, Burn};
 use clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
-use focusable::Focusable;
+use body_traits::Focusable;
+use transfer::plan_hohmann;
 use bevy::{
     math::DQuat,
     prelude::*
@@ -42,6 +44,7 @@ fn main() {
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
        .add_observer(focus_on_click)
+       .add_observer(hohmann_transfer)
        .run();
 }
 
@@ -65,7 +68,7 @@ fn setup(
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
             Transform::default(),
             WorldPos::ORIGIN,
-            Focusable{},
+            Focusable::default(),
     )).id();
 
     // Orbital Elements {
@@ -83,7 +86,7 @@ fn setup(
             MeshMaterial3d(materials.add(Color::srgb(0.4, 0.6, 1.0))),
             Transform::default(),
             WorldPos::ORIGIN,
-            Focusable{},
+            Focusable{ ships_can_orbit: true },
             Orbit {
                 elements: OrbitalElements {
                     a: 400.0,
@@ -105,7 +108,7 @@ fn setup(
         MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.7))),
         Transform::default(),
         WorldPos::ORIGIN,
-        Focusable{},
+        Focusable{ ships_can_orbit: true },
         Orbit {
             elements: OrbitalElements {
                 a: 50.0, 
@@ -126,7 +129,7 @@ fn setup(
             Mesh3d(meshes.add(Sphere::new(5.0))),
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.3, 0.3))),
             Transform::default(),
-            Focusable{},
+            Focusable::default(),
             WorldPos::ORIGIN,
             Orbit {
                 elements: OrbitalElements {
@@ -175,8 +178,8 @@ fn mu_for_period(a: f64, period: f64) -> f64 {
     n * n * a.powi(3)
 }
 
-// for testing
-pub fn debug_burn_key(
+// for testing 
+fn debug_burn_key(
     keys: Res<ButtonInput<KeyCode>>,
     clock: Res<SimClock>,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
@@ -186,6 +189,31 @@ pub fn debug_burn_key(
         let t = clock.t;
         let v = orbit.elements.velocity_at(t);
         let dv = v * 0.1;
-        maneuvers.queue.push_back(Burn { execute_at: t, dv });
+        maneuvers.queue.push_back(Burn { execute_at: t, dv });  
+    }
+}
+
+// right clicking while focusing a ship will 
+fn hohmann_transfer(
+    click: On<Pointer<Click>>,
+    clock: Res<SimClock>,
+    mut ships: Query<(&Orbit, &mut Maneuvers)>,
+    bodies: Query<(&Orbit, &Focusable), Without<Maneuvers>>,
+    cam: Single<&OrbitCam, With<Camera>>,
+) {
+    let focused = cam.focus;
+    
+    if click.event.button == PointerButton::Secondary { info!("Clicked Right Mouse Button"); }
+    
+    if click.event.button == PointerButton::Secondary && bodies.get(click.entity).is_ok() && ships.get(focused).is_ok() {
+       let mut ship = ships.get_mut(focused).unwrap();
+       let orbit_elements = &ship.0.elements;
+       let t = clock.t;
+       let r2 = bodies.get(click.entity).unwrap().0.elements.a;
+
+       let burns = plan_hohmann(orbit_elements, r2, t);
+       ship.1.queue.push_front(burns.1);
+       ship.1.queue.push_front(burns.0);
+       info!("Pushed 2 burns");
     }
 }

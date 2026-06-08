@@ -7,7 +7,6 @@ use crate::world_pos::WorldPos;
 use crate::orbital_elements::OrbitalElements;
 use std::collections::VecDeque;
 
-
 #[derive(Component)] 
 pub struct Orbit {
     pub(crate) elements: OrbitalElements, // math of the specific orbit 
@@ -77,16 +76,27 @@ pub fn draw_orbits(
     for orbit in &orbits {
         let Ok(parent_wp) = bodies.get(orbit.parent) else { continue; };
         let parent_pos = parent_wp.0;
-        let period = orbit.elements.period();
+        let elements = &orbit.elements;
+        let color = Color::srgb(0.35, 0.35, 0.4);
     
-        // calculate 128 points through the period 
-        let points = (0..SEGMENTS).map(|i| {
-            let t = period * i as f64 / SEGMENTS as f64;
-            let world = parent_pos + orbit.elements.offset_at(t);
-            WorldPos(world).to_render_space(cam)
-        });
-
-        gizmos.lineloop(points, Color::srgb(0.35, 0.35, 0.4));
+        // if circle or elipse 
+        if elements.e < 1.0 {
+            let period = elements.period();
+            let points = (0..SEGMENTS).map(|i| {
+                let t = period * i as f64 / SEGMENTS as f64;
+                let world = parent_pos + elements.offset_at(t);
+                WorldPos(world).to_render_space(cam)
+            });
+            gizmos.lineloop(points, color);
+        } else { 
+            // open hyperbola, go between asymptotes 
+            let nu_max = (-1.0 / elements.e).acos() * 0.98;
+            let points = (0..=SEGMENTS).map(|i| {
+                let nu = -nu_max + 2.0 * nu_max * i as f64 / SEGMENTS as f64;
+                WorldPos(parent_pos + elements.point_at_true_anomaly(nu)).to_render_space(cam)
+            });
+            gizmos.linestrip(points, color);
+        }
     }
 }
 

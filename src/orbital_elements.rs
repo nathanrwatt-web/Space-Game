@@ -36,14 +36,9 @@ pub(crate) struct OrbitalElements {
 }
 
 impl OrbitalElements {
-    // see Proposition 5 
-    fn mean_motion(&self) -> f64 {
-        // mean motion is given by G·M / a^{3/2 }
-        (self.mu / self.a.powi(3)).sqrt()
-    }
-
     // 2pi / n = 2pi / (2pi / T) = T = period 
     pub(crate) fn period(&self) -> f64 {
+        if self.e >= 1.0 { return f64::INFINITY }
         TAU / self.mean_motion() 
     }
 
@@ -63,25 +58,35 @@ impl OrbitalElements {
         let n = self.mean_motion();
         // mean anomaly at time t: M = M_0 + n · (t - t_0)
         let m = self.m0 + self.mean_motion() * (t - self.epoch);
-        let ea = solve_kepler(m, self.e); // Eccentric anomaly 
+        let q = self.orientation();
 
-        let (sin_e, cos_e) = (ea.sin(), ea.cos());
-        let b = self.a * (1.0 - self.e * self.e).sqrt(); // semi minor axis 
-    
-        // see Proposition 4
-        let new_pos = DVec3::new(self.a * (cos_e - self.e), b * sin_e, 0.0);
+        if self.e < 1.0 {
+            let ea = solve_kepler(m, self.e); // Eccentric anomaly 
 
-        // see Proposition 6
-        let edot = n / (1.0 - self.e * cos_e); // derivative of Eccentric Anomaly 
-        // 0 change in non x-y plane because planar orbit 
-        let vel = DVec3::new(-self.a * sin_e, b * cos_e, 0.0) * edot;
+            let (sin_e, cos_e) = (ea.sin(), ea.cos());
+            let b = self.a * (1.0 - self.e * self.e).sqrt(); // semi minor axis 
+        
+            // see Proposition 4
+            let new_pos = DVec3::new(self.a * (cos_e - self.e), b * sin_e, 0.0);
 
-        // rightmost applied first means spins by ω -> tilted by i -> swung by Ω
-        let q = DQuat::from_rotation_z(self.lan)
-            * DQuat::from_rotation_x(self.i)
-            * DQuat::from_rotation_z(self.arg_pe);
+            // see Proposition 6
+            let edot = n / (1.0 - self.e * cos_e); // derivative of Eccentric Anomaly 
+            // 0 change in non x-y plane because planar orbit 
+            let vel = DVec3::new(-self.a * sin_e, b * cos_e, 0.0) * edot;
 
-        (q * new_pos, q * vel)
+            (q * new_pos, q * vel)
+        } else {
+            let hea = solve_kepler_hyperbolic(m, self.e);
+            let (sinh_e, cosh_e) = (hea.sinh(), hea.cosh());
+
+            let bh = -self.a * (self.e * self.e - 1.0).sqrt();
+
+            let new_pos = DVec3::new(self.a * (cosh_e - self.e), bh * sinh_e, 0.0);
+
+            let hdot = n / (self.e * cosh_e - 1.0);
+            let vel = DVec3::new(self.a * sinh_e, bh * cosh_e, 0.0) * hdot;
+            (q * new_pos, q * vel)
+        }
     }
 
     // see Proposition 7 
@@ -120,9 +125,14 @@ impl OrbitalElements {
 
         if r.dot(v) < 0.0 { nu = TAU - nu; }
         
-        let ea = 2.0 * ((1.0 - e).sqrt() * (nu * 0.5).sin())
-            .atan2((1.0 + e).sqrt() * (nu * 0.5).cos());
-        let m0 = ea - e * ea.sin();
+        let m0 = if e < 1.0 {
+            let ea = 2.0 * ((1.0 - e).sqrt() * (nu * 0.5).sin())
+                .atan2((1.0 + e).sqrt() * (nu * 0.5).cos());
+            ea - e * ea.sin()
+        } else {
+            let hea = 2.0 * (((e - 1.0) / (e + 1.0)).sqrt() * (nu * 0.5).tan()).atanh();
+            e * hea.sinh() - hea
+        };
 
         OrbitalElements {
             a,
@@ -140,6 +150,27 @@ impl OrbitalElements {
     pub(crate) fn with_burn(&self, t: f64, dv: DVec3) -> OrbitalElements {
         let (r, v) = self.state_vectors_at(t);
         OrbitalElements::from_state(r, v + dv, self.mu, t)
+    }
+    
+    // works for both conics, constructs point at the ture anomoly 
+    pub(crate) fn point_at_true_anomaly(&self, nu: f64) -> DVec3 {
+        let p = self.a * (1.0 - self.e * self.e);
+        let r = p / (1.0 + self.e * nu.cos());
+
+        self.orientation() * DVec3::new(r * nu.cos(), r * nu.sin(), 0.0)
+    }
+
+    // rightmost applied first means spins by ω -> tilted by i -> swung by Ω
+    fn orientation(&self) -> DQuat {
+        DQuat::from_rotation_z(self.lan)
+            * DQuat::from_rotation_x(self.i)
+            *  DQuat::from_rotation_z(self.arg_pe)
+    }
+
+    // see Proposition 5 
+    fn mean_motion(&self) -> f64 {
+        // mean motion is given by G·M / a^{3/2 }
+        (self.mu / self.a.abs().powi(3)).sqrt()
     }
 }
 
@@ -160,6 +191,27 @@ fn solve_kepler(m: f64, e: f64) -> f64 { // mean Anomaly + eccentricity
     }
     ea // outputs Eccentric Anomaly
 }
+
+fn solve_kepler_hyperbolic(m: f64, e: f64) -> f64 {
+
+    // seed 
+    let mut hea = if m.abs() > 6.0 {
+        m.signum() * (2.0 * m.abs() / e + 1.8).ln()
+    } else {
+        m / (e - 1.0) // linear near periapsis 
+    };
+
+    for _ in 0..50  {
+        let f = e * hea.sinh() - hea - m;
+        let fp = e * hea.cosh() - 1.0;
+        let dx = f / fp;
+        hea -= dx;
+        if dx.abs() < 1e-12 { break; }
+    }
+    hea
+}
+
+
 
 /* ===== MATH =====
  *
@@ -436,5 +488,29 @@ mod tests {
         let el2 = OrbitalElements::from_state(r, v, el.mu, t);
         let t2 = t + 2.0e6;
         assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0);
+    }
+
+    #[test]
+    fn hyperbolic_round_trips() {
+        let r = DVec3::new(1.5e11, 0.0, 0.0);
+        let v = DVec3::new(0.0, 5.0e4, 1.0e4);            // |v| > escape ⇒ hyperbolic
+        let el = OrbitalElements::from_state(r, v, MU_SUN, 0.0);
+        assert!(el.e > 1.0, "e = {}", el.e);
+        let (r2, v2) = el.state_vectors_at(0.0);
+        assert!((r - r2).length() < 1.0);
+        assert!((v - v2).length() < 1e-6);
+    }
+
+    #[test]
+    fn hyperbolic_velocity_matches_vis_viva() {
+        let el = OrbitalElements::from_state(
+            DVec3::new(1.5e11, 0.0, 0.0), DVec3::new(0.0, 5.0e4, 1.0e4), MU_SUN, 0.0);
+        for k in -10..=10 {
+            let t = k as f64 * 1.0e5;
+            let r = el.offset_at(t).length();
+            let vmag = el.velocity_at(t).length();
+            let vis = (el.mu * (2.0 / r - 1.0 / el.a)).sqrt(); // a<0 ⇒ 2/r − 1/a > 0
+            assert!((vmag - vis).abs() / vis < 1e-9, "t={t}: {vmag} vs {vis}");
+        }
     }
 }

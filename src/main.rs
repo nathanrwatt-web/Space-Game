@@ -59,7 +59,6 @@ fn setup(
     let mu_earth: f64 = mu_for_period(100.0, 8.0 * day);
     let mu_moon:  f64 = mu_for_period(20.0, 8.0 * day);
 
-
     commands.spawn((
         PointLight { shadows_enabled: true, ..default() },
         Transform::default(),

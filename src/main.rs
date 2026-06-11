@@ -1,23 +1,20 @@
-mod world_pos; 
-mod orbital_elements;
-mod orbit;
-mod clock;
-mod camera; 
+mod world_pos;
+mod math;
+mod sim;
+mod camera;
 mod body_traits;
-mod transfer;
-mod soi;
 mod debug_ui;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use orbit::{
+use sim::orbit::{
     Orbit, Maneuvers, Burn, Body, 
     propagate_orbits, draw_orbits, execute_maneuvers,
 };
-use soi::{draw_soi, update_soi};
-use clock::{SimClock, warp_keys, advance_clock};
+use sim::soi::{draw_soi, update_soi};
+use sim::clock::{SimClock, warp_keys, advance_clock};
 use world_pos::WorldPos;
 use body_traits::Focusable;
-use transfer::plan_hohmann;
+use sim::transfer::plan_hohmann;
 use bevy::{
     math::DQuat,
     prelude::*
@@ -25,7 +22,7 @@ use bevy::{
 use debug_ui::{DebugUi, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 
-use crate::orbital_elements::OrbitalElements;
+use crate::math::orbital_elements::OrbitalElements;
 
 fn main() {
    App::new()

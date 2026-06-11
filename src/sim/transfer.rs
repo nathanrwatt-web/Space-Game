@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
-use crate::orbit::Burn;
-use crate::orbital_elements::OrbitalElements;
+use crate::sim::orbit::Burn;
+use crate::math::orbital_elements::OrbitalElements;
 
 // constucts two burns for the hohmann orbit 
 pub fn plan_hohmann(ship: &OrbitalElements, r2: f64, t_now: f64) -> (Burn, Burn) {

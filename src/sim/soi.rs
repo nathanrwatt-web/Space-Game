@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use bevy::math::{Isometry3d, DVec3};
-use crate::orbital_elements::OrbitalElements;
-use crate::orbit::{Orbit, Body, Maneuvers, absolute_state};
+use crate::math::orbital_elements::OrbitalElements;
+use crate::sim::orbit::{Orbit, Body, Maneuvers, absolute_state};
 use crate::world_pos::WorldPos;
-use crate::clock::SimClock;
+use crate::sim::clock::SimClock;
 use std::collections::HashMap;
 
 // Laplace sphere of influence 

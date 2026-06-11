@@ -4,10 +4,10 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
-use crate::clock::SimClock;
-use crate::orbit::{Body, Burn, Maneuvers, Orbit};
-use crate::orbital_elements::OrbitalElements;
-use crate::soi::soi_radius;
+use crate::sim::clock::SimClock;
+use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit};
+use crate::math::orbital_elements::OrbitalElements;
+use crate::sim::soi::soi_radius;
 use crate::world_pos::WorldPos;
 
 #[derive(Clone, Copy, PartialEq)]

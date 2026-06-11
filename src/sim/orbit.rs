@@ -2,9 +2,9 @@ use bevy::prelude::*;
 use bevy::math::DVec3;
 use std::collections::HashMap;
 
-use crate::clock::SimClock;
+use crate::sim::clock::SimClock;
 use crate::world_pos::WorldPos;
-use crate::orbital_elements::OrbitalElements;
+use crate::math::orbital_elements::OrbitalElements;
 use std::collections::VecDeque;
 
 #[derive(Component)] 

@@ -153,10 +153,11 @@ impl OrbitalElements {
     }
     
     // works for both conics, constructs point at the ture anomoly 
+    // conic polar equation: r = p / (1 + e·cos ν)
+    // semi-latus rectum: p = a(1−e²)
     pub(crate) fn point_at_true_anomaly(&self, nu: f64) -> DVec3 {
         let p = self.a * (1.0 - self.e * self.e);
         let r = p / (1.0 + self.e * nu.cos());
-
         self.orientation() * DVec3::new(r * nu.cos(), r * nu.sin(), 0.0)
     }
 

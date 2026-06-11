@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::math::{DVec3, DQuat};
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy_egui::input::EguiWantsInput;
 
 use crate::world_pos::WorldPos;
 use crate::body_traits::Focusable;
@@ -77,9 +78,12 @@ pub fn orbit_camera(
 // when a focusable entity is clicked, change the focus 
 pub fn focus_on_click(
     click: On<Pointer<Click>>,
+    egui_wants: Res<EguiWantsInput>,
     bodies: Query<(&WorldPos, &Focusable)>,
     mut cam: Single<&mut OrbitCam>,
 ) {
+    // if pointer is over the debug window 
+    if egui_wants.wants_any_pointer_input() { return; }
     if click.event.button == PointerButton::Primary && bodies.get(click.entity).is_ok() {
         cam.focus = click.entity;
     }

@@ -6,6 +6,7 @@ mod camera;
 mod body_traits;
 mod transfer;
 mod soi;
+mod debug_ui;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
 use orbit::{
@@ -21,6 +22,8 @@ use bevy::{
     math::DQuat,
     prelude::*
 };
+use debug_ui::{DebugUi, toggle_debug_ui, debug_panel, debug_is_open};
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 
 use crate::orbital_elements::OrbitalElements;
 
@@ -34,18 +37,25 @@ fn main() {
            ..default()
         }))
        .add_plugins(MeshPickingPlugin)
+       .add_plugins(EguiPlugin::default())
+       .init_resource::<DebugUi>()
        .add_systems(Startup, setup)
        .init_resource::<SimClock>()
        // order is important: change time warp -> add time -> calculate orbits -> update camera 
        .add_systems(Update, (
                warp_keys, advance_clock, debug_burn_key,
                execute_maneuvers, update_soi, propagate_orbits,
-               orbit_camera, draw_orbits, draw_soi,
+               orbit_camera,
             ).chain())
+       .add_systems(Update, (draw_orbits, draw_soi).chain()
+            .after(orbit_camera)
+            .run_if(debug_is_open))
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
        .add_observer(focus_on_click)
        .add_observer(hohmann_transfer)
+       .add_systems(Update, toggle_debug_ui)
+       .add_systems(EguiPrimaryContextPass, debug_panel)
        .run();
 }
 
@@ -74,6 +84,7 @@ fn setup(
             Body{ mu: mu_star },
             WorldPos::ORIGIN,
             Focusable::default(),
+            Name::new("Star"),
     )).id();
 
     // Orbital Elements {
@@ -106,6 +117,7 @@ fn setup(
                 },
                 parent: star,
             },
+            Name::new("Planet"),
     )).id();
 
     // moon 
@@ -129,6 +141,7 @@ fn setup(
             },         // mu = PLANET's G·M
             parent: planet,
         },
+        Name::new("Moon"),
     ));
 
     // ship 
@@ -152,6 +165,7 @@ fn setup(
                 parent: star,
             },
             Maneuvers::default(),
+            Name::new("Ship"),
     ));
 
     // camera 
@@ -203,11 +217,15 @@ fn debug_burn_key(
 // right clicking while focusing a ship will 
 fn hohmann_transfer(
     click: On<Pointer<Click>>,
+    debug: Res<DebugUi>,
+    egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
     bodies: Query<(&Orbit, &Focusable), Without<Maneuvers>>,
     cam: Single<&OrbitCam, With<Camera>>,
 ) {
+    // if no debug or pointer on the debug window
+    if !debug.open || egui_wants.wants_any_pointer_input() { return; }
     let focused = cam.focus;
     
     if click.event.button == PointerButton::Secondary { info!("Clicked Right Mouse Button"); }

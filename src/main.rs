@@ -10,11 +10,14 @@ use sim::orbit::{
     Orbit, Maneuvers, Burn, Body, 
     propagate_orbits, draw_orbits, execute_maneuvers,
 };
-use sim::soi::{draw_soi, update_soi};
-use sim::clock::{SimClock, warp_keys, advance_clock};
+use sim::{
+    soi::{draw_soi, update_soi},
+    clock::{SimClock, warp_keys, advance_clock},
+    transfer::{plan_lambert_intercept, hohmann_tof},
+    capture::{CaptureIntent, auto_capture},
+};
 use world_pos::WorldPos;
 use body_traits::Focusable;
-use sim::transfer::plan_hohmann;
 use bevy::{
     math::DQuat,
     prelude::*
@@ -41,7 +44,7 @@ fn main() {
        // order is important: change time warp -> add time -> calculate orbits -> update camera 
        .add_systems(Update, (
                warp_keys, advance_clock, debug_burn_key,
-               execute_maneuvers, update_soi, propagate_orbits,
+               execute_maneuvers, update_soi, auto_capture, propagate_orbits,
                orbit_camera,
             ).chain())
        .add_systems(Update, (draw_orbits, draw_soi).chain()
@@ -50,7 +53,7 @@ fn main() {
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
        .add_observer(focus_on_click)
-       .add_observer(hohmann_transfer)
+       .add_observer(intercept_transfer)
        .add_systems(Update, toggle_debug_ui)
        .add_systems(EguiPrimaryContextPass, debug_panel)
        .run();
@@ -212,30 +215,38 @@ fn debug_burn_key(
 }
 
 // right clicking while focusing a ship will 
-fn hohmann_transfer(
+fn intercept_transfer(
     click: On<Pointer<Click>>,
     debug: Res<DebugUi>,
     egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
+    mut commands: Commands,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
     bodies: Query<(&Orbit, &Focusable), Without<Maneuvers>>,
     cam: Single<&OrbitCam, With<Camera>>,
 ) {
-    // if no debug or pointer on the debug window
+    // if no debug or pointer on the debug window, or if not right click 
     if !debug.open || egui_wants.wants_any_pointer_input() { return; }
-    let focused = cam.focus;
-    
-    if click.event.button == PointerButton::Secondary { info!("Clicked Right Mouse Button"); }
-    
-    if click.event.button == PointerButton::Secondary && bodies.get(click.entity).is_ok() && ships.get(focused).is_ok() {
-       let mut ship = ships.get_mut(focused).unwrap();
-       let orbit_elements = &ship.0.elements;
-       let t = clock.t;
-       let r2 = bodies.get(click.entity).unwrap().0.elements.a;
+    if click.event.button != PointerButton::Secondary { return; }
 
-       let burns = plan_hohmann(orbit_elements, r2, t);
-       ship.1.queue.push_front(burns.1);
-       ship.1.queue.push_front(burns.0);
-       info!("Pushed 2 burns");
-    }
+    let ship_e = cam.focus;
+    let Ok((ship_orbit, _)) = ships.get(ship_e) else { return; };          // focused must be a ship
+    let Ok((target_orbit, _)) = bodies.get(click.entity) else { return; }; // clicked must be a body
+
+    // both must be in the same reference frame 
+    if target_orbit.parent != ship_orbit.parent { return; }
+
+    let ship_el = ship_orbit.elements;
+    let target_el = target_orbit.elements;
+    let t = clock.t;
+    let tof = hohmann_tof(ship_el.a, target_el.a, ship_el.mu);
+
+    let Some(burn) = plan_lambert_intercept(&ship_el, &target_el, t, tof) else {
+        info!("Lambert failed to converge");
+        return;
+    };
+
+    ships.get_mut(ship_e).unwrap().1.queue.push_back(burn);
+    commands.entity(ship_e).insert(CaptureIntent { target: click.entity });
+    info!("Intercept planned + capture armed");
 }

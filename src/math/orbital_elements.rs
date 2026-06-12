@@ -161,6 +161,10 @@ impl OrbitalElements {
         self.orientation() * DVec3::new(r * nu.cos(), r * nu.sin(), 0.0)
     }
 
+    pub(crate) fn time_of_periapsis(&self) -> f64 {
+        self.epoch - self.m0 / self.mean_motion()
+    }
+
     // rightmost applied first means spins by ω -> tilted by i -> swung by Ω
     fn orientation(&self) -> DQuat {
         DQuat::from_rotation_z(self.lan)

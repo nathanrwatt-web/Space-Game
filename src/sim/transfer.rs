@@ -1,6 +1,7 @@
 use std::f64::consts::PI;
 use crate::sim::orbit::Burn;
 use crate::math::orbital_elements::OrbitalElements;
+use crate::math::lambert::lambert;
 
 // constucts two burns for the hohmann orbit 
 pub fn plan_hohmann(ship: &OrbitalElements, r2: f64, t_now: f64) -> (Burn, Burn) {
@@ -21,6 +22,26 @@ pub fn plan_hohmann(ship: &OrbitalElements, r2: f64, t_now: f64) -> (Burn, Burn)
      Burn { execute_at: t_arrival,  dv: dv2, },)
 }
 
+// Departure burn for intercept which meets the target body 
+pub fn plan_lambert_intercept(
+    ship: &OrbitalElements,
+    target: &OrbitalElements,
+    t_dep: f64,
+    tof: f64,
+) -> Option<Burn> {
+    let mu = ship.mu;
+    // start pos is now, end pos is later 
+    let r1 = ship.offset_at(t_dep);
+    let r2 = target.offset_at(t_dep + tof);
+
+    let (v1, _v2) = lambert(r1, r2, tof, mu, true)?;
+    let dv1 = v1 - ship.velocity_at(t_dep);
+    Some(Burn { execute_at: t_dep, dv: dv1 })
+}
+
+pub fn hohmann_tof(r1: f64, r2: f64, mu: f64) -> f64 {
+    hohmann(r1, r2, mu).2
+}
 
 
 // Results in (v1, v2, t) where v's are velocity of burns and t is the time of the orbit 
@@ -51,5 +72,23 @@ mod tests {
         assert!((dv1 - 2.4258).abs() < 1e-3, "dv1 = {dv1}");
         assert!((dv2 - 1.4669).abs() < 1e-3, "dv2 = {dv2}");
         assert!((t - 18_989.0).abs() < 2.0, "t = {t}");
+    }
+
+    #[test]
+    fn lambert_intercept_reaches_moving_target() {
+        let mu = 1.0e14;
+        // two coplanar circular orbits, target given a phase offset (m0 = 1.0 rad)
+        let ship   = OrbitalElements { a: 1.0e8, e: 0.0, i: 0.0, lan: 0.0, arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu };
+        let target = OrbitalElements { a: 1.6e8, e: 0.0, i: 0.0, lan: 0.0, arg_pe: 0.0, m0: 1.0, epoch: 0.0, mu };
+
+        let tof = hohmann_tof(ship.a, target.a, mu);
+        let burn = plan_lambert_intercept(&ship, &target, 0.0, tof).expect("planned");
+
+        // fly the planned transfer and confirm it lands on the planet, not just its radius
+        let transfer = ship.with_burn(0.0, burn.dv);
+        let arrival = transfer.offset_at(tof);
+        let planet_pos = target.offset_at(tof);
+        let miss = (arrival - planet_pos).length() / planet_pos.length();
+        assert!(miss < 1e-6, "missed by {miss}: {arrival:?} vs {planet_pos:?}");
     }
 }

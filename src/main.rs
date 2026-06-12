@@ -11,10 +11,10 @@ use sim::orbit::{
     propagate_orbits, draw_orbits, execute_maneuvers,
 };
 use sim::{
-    soi::{draw_soi, update_soi},
+    soi::{draw_soi, update_soi, soi_radius},
     clock::{SimClock, warp_keys, advance_clock},
-    transfer::{plan_lambert_intercept, hohmann_tof},
-    capture::{CaptureIntent, auto_capture},
+    mission::plan_mission,
+    capture::{ScheduledCapture, execute_capture},
 };
 use world_pos::WorldPos;
 use body_traits::Focusable;
@@ -22,7 +22,7 @@ use bevy::{
     math::DQuat,
     prelude::*
 };
-use debug_ui::{DebugUi, toggle_debug_ui, debug_panel, debug_is_open};
+use debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 
 use crate::math::orbital_elements::OrbitalElements;
@@ -44,7 +44,7 @@ fn main() {
        // order is important: change time warp -> add time -> calculate orbits -> update camera 
        .add_systems(Update, (
                warp_keys, advance_clock, debug_burn_key,
-               execute_maneuvers, update_soi, auto_capture, propagate_orbits,
+               execute_maneuvers, update_soi, execute_capture, propagate_orbits,
                orbit_camera,
             ).chain())
        .add_systems(Update, (draw_orbits, draw_soi).chain()
@@ -65,9 +65,11 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let day: f64 = 60.0 * 60.0 * 24.0;
-    let mu_star:  f64 = mu_for_period(160.0, 8.0 * day);
-    let mu_earth: f64 = mu_for_period(100.0, 8.0 * day);
-    let mu_moon:  f64 = mu_for_period(20.0, 8.0 * day);
+
+    let mu_star = mu_for_period(160.0, 8.0 * day);
+    let mu_earth = mu_star   * 1.0e-3;              // planet ≈ 1/1000 of the star
+    let mu_moon   = mu_earth * 1.0e-2;              // moon  ≈ 1/100 of the planet
+    
 
     commands.spawn((
         PointLight { shadows_enabled: true, ..default() },
@@ -81,7 +83,7 @@ fn setup(
             Mesh3d(meshes.add(Sphere::new(60.0))),
             MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
             Transform::default(),
-            Body{ mu: mu_star },
+            Body{ mu: mu_star, radius: 60.0 },
             WorldPos::ORIGIN,
             Focusable::default(),
             Name::new("Star"),
@@ -103,7 +105,7 @@ fn setup(
             Transform::default(),
             WorldPos::ORIGIN,
             Focusable{},
-            Body { mu: mu_earth },
+            Body { mu: mu_earth, radius: 15.0 },
             Orbit {
                 elements: OrbitalElements {
                     a: 400.0,
@@ -127,7 +129,7 @@ fn setup(
         Transform::default(),
         WorldPos::ORIGIN,
         Focusable{},
-        Body { mu: mu_moon },
+        Body { mu: mu_moon, radius: 5.0 },
         Orbit {
             elements: OrbitalElements {
                 a: 50.0, 
@@ -214,39 +216,57 @@ fn debug_burn_key(
     }
 }
 
-// right clicking while focusing a ship will 
+
 fn intercept_transfer(
     click: On<Pointer<Click>>,
-    debug: Res<DebugUi>,
+    mut debug: ResMut<DebugUi>,
     egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
     mut commands: Commands,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
-    bodies: Query<(&Orbit, &Focusable), Without<Maneuvers>>,
+    bodies: Query<(&Orbit, &Body, &Focusable), Without<Maneuvers>>,
     cam: Single<&OrbitCam, With<Camera>>,
 ) {
-    // if no debug or pointer on the debug window, or if not right click 
     if !debug.open || egui_wants.wants_any_pointer_input() { return; }
     if click.event.button != PointerButton::Secondary { return; }
 
     let ship_e = cam.focus;
-    let Ok((ship_orbit, _)) = ships.get(ship_e) else { return; };          // focused must be a ship
-    let Ok((target_orbit, _)) = bodies.get(click.entity) else { return; }; // clicked must be a body
-
-    // both must be in the same reference frame 
+    let Ok((ship_orbit, _)) = ships.get(ship_e) else { return; };
+    let Ok((target_orbit, target_body, _)) = bodies.get(click.entity) else { return; };
     if target_orbit.parent != ship_orbit.parent { return; }
 
     let ship_el = ship_orbit.elements;
     let target_el = target_orbit.elements;
-    let t = clock.t;
-    let tof = hohmann_tof(ship_el.a, target_el.a, ship_el.mu);
+    let mu_target = target_body.mu;
+    let r_soi = soi_radius(target_el.a, mu_target, ship_el.mu);
+    let r_p = debug.capture_rp.unwrap_or((target_body.radius * 1.2).min(0.9 * r_soi));
 
-    let Some(burn) = plan_lambert_intercept(&ship_el, &target_el, t, tof) else {
-        info!("Lambert failed to converge");
+    let Some(plan) = plan_mission(&ship_el, &target_el, mu_target, clock.t, r_p, &[], 0.0) else {
+        info!("no mission found");
         return;
     };
 
-    ships.get_mut(ship_e).unwrap().1.queue.push_back(burn);
-    commands.entity(ship_e).insert(CaptureIntent { target: click.entity });
-    info!("Intercept planned + capture armed");
+    let t_dep = plan.departure.execute_at;
+    ships.get_mut(ship_e).unwrap().1.queue.push_back(plan.departure);
+    commands.entity(ship_e).insert(ScheduledCapture {
+        execute_at: plan.t_peri,
+        parent: click.entity,
+        elements: plan.circular,
+    });
+    info!("mission planned: capture at t = {:.0}", plan.t_peri);
+
+    debug.last_mission = Some(MissionReadout {
+        t_dep,
+        wait: t_dep - clock.t,
+        t_peri: plan.t_peri,
+        v_inf: plan.v_inf,
+        dep_dv: plan.dep_dv,
+        capture_dv: plan.capture_cost,
+        total_dv: plan.dep_dv + plan.capture_cost,
+        r_p,
+        captured_a: plan.circular.a,
+        captured_e: plan.circular.e,
+    });
 }
+
+

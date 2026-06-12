@@ -69,6 +69,8 @@ pub struct DebugUi {
     pub selected: Option<Entity>,
     pub burn_form: BurnForm,
     pub spawn_form: SpawnForm,
+    pub capture_rp: Option<f64>,            // r_p override; None ⇒ planner default
+    pub last_mission: Option<MissionReadout>,
 }
 
 pub fn debug_is_open(ui:  Res<DebugUi>) -> bool {
@@ -79,6 +81,20 @@ pub fn toggle_debug_ui(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<DebugUi>)
     if keys.just_pressed(KeyCode::F1) {
         ui.open = !ui.open;
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct MissionReadout {
+    pub t_dep: f64,
+    pub wait: f64,
+    pub t_peri: f64,
+    pub v_inf: f64,
+    pub dep_dv: f64,
+    pub capture_dv: f64,
+    pub total_dv: f64,
+    pub r_p: f64,
+    pub captured_a: f64,
+    pub captured_e: f64,
 }
 
 pub fn debug_panel(
@@ -168,6 +184,8 @@ pub fn debug_panel(
     // ---- draw ----
     let mut open = state.open;
     let mut bf = state.burn_form.clone();
+    let mut capture_rp = state.capture_rp;     // Option<f64>, Copy
+    let last_mission = state.last_mission;      // Option<MissionReadout>, Copy
     let mut sf = state.spawn_form.clone();
     if sf.parent.is_none() {
         sf.parent = parents.first().map(|(e, _)| *e); // preselect so the spawn button isn't dead
@@ -299,6 +317,30 @@ pub fn debug_panel(
                     do_spawn = true;
                 }
             });
+
+            // missions 
+            ui.separator();
+            ui.collapsing("mission", |ui| {
+                let mut overriding = capture_rp.is_some();
+                ui.checkbox(&mut overriding, "override capture r_p");
+                if overriding {
+                    let mut v = capture_rp.unwrap_or(5.0);
+                    ui.add(egui::DragValue::new(&mut v).speed(0.1).prefix("r_p "));
+                    capture_rp = Some(v);
+                } else {
+                    capture_rp = None;
+                }
+
+                if let Some(m) = last_mission {
+                    ui.label(format!("depart t={:.0}   (in {:.0}s)", m.t_dep, m.wait));
+                    ui.label(format!("v_inf = {:.5}", m.v_inf));
+                    ui.label(format!("Δv = {:.5} + {:.5} = {:.5}", m.dep_dv, m.capture_dv, m.total_dv));
+                    ui.label(format!("capture t={:.0}", m.t_peri));
+                    ui.label(format!("orbit a={:.3}  e={:.4}  (r_p {:.3})", m.captured_a, m.captured_e, m.r_p));
+                } else {
+                    ui.label("no mission planned yet");
+                }
+            });
         });
 
     // ---- writes burn the closure ---
@@ -340,7 +382,7 @@ pub fn debug_panel(
                 Orbit { elements, parent },
             ));
             match sf.kind {
-                SpawnKind::Body => { ec.insert(Body { mu: sf.mu }); }
+                SpawnKind::Body => { ec.insert(Body { mu: sf.mu, radius: sf.mesh_radius as f64 }); }
                 SpawnKind::Ship => { ec.insert(Maneuvers::default()); }
             }
     }
@@ -352,5 +394,6 @@ pub fn debug_panel(
     state.burn_form = bf;
     state.spawn_form = sf;
     state.open = open;
+    state.capture_rp = capture_rp;
     Ok(())
 }

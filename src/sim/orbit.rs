@@ -28,6 +28,7 @@ pub struct Maneuvers {
 #[derive(Component)]
 pub struct Body {
     pub mu: f64,
+    pub radius: f64,
 }
 
 pub fn propagate_orbits(

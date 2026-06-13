@@ -50,6 +50,7 @@ fn main() {
        .add_systems(Update, (draw_orbits, draw_soi).chain()
             .after(orbit_camera)
             .run_if(debug_is_open))
+       .add_systems(Update, apply_focus_request.before(orbit_camera))
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
        // watches for mouse click primary events on entities with focusable and world_pos 
        .add_observer(focus_on_click)
@@ -201,16 +202,20 @@ fn intercept_transfer(
         return;
     };
 
+    // make sure the selected ship is indeed a ship
     let Ok((ship_orbit, _)) = ships.get(ship_e) else { 
         info!("intercept: focused entity {ship_e:?} is not a ship");
         return; 
     };
+
+    // make sure what is clicked can be targeted 
     let Ok((target_orbit, target_body, _)) = bodies.get(click.entity) else {
         info!("intercept: clicked {:?} is not a targetable body (root/ship/occluder?)", click.entity);
         return;
     };
-
-    if target_orbit.parent != ship_orbit.parent { 
+    
+    // check if ship is returning to home body (in reference) or moving in reference frame 
+    if (target_orbit.parent != ship_orbit.parent) && (click.entity != ship_orbit.parent)  { 
         info!("The parent of the target ({:?}) is not the target of the ship ({:?})",
             target_orbit.parent, ship_orbit.parent);
         return; 
@@ -250,10 +255,18 @@ fn intercept_transfer(
     });
 }
 
-
-
-
-
+// double-click in the debug entity list routes here: snap focus + a framing zoom
+fn apply_focus_request(
+    mut ui: ResMut<DebugUi>,
+    bodies: Query<&Body>,
+    mut cam: Single<&mut OrbitCam, With<Camera>>,
+) {
+    let Some(e) = ui.focus_request.take() else { return; };  // consume once
+    cam.focus = e;
+    cam.distance = bodies.get(e)
+        .map(|b| (b.radius * 6.0).max(15.0))  // frame the body by its radius
+        .unwrap_or(300.0);                    // ships have no Body → fixed default
+}
 
 
 

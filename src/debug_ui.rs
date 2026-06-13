@@ -71,6 +71,7 @@ pub struct DebugUi {
     pub spawn_form: SpawnForm,
     pub capture_rp: Option<f64>,            // r_p override; None ⇒ planner default
     pub last_mission: Option<MissionReadout>,
+    pub focus_request: Option<Entity>,      // if double click list item in debug
 }
 
 pub fn debug_is_open(ui:  Res<DebugUi>) -> bool {
@@ -191,6 +192,7 @@ pub fn debug_panel(
         sf.parent = parents.first().map(|(e, _)| *e); // preselect so the spawn button isn't dead
     }
     let mut clicked: Option<Entity> = None;
+    let mut focus_double_click: Option<Entity> = None;
     let mut pending: Option<DVec3> = None;
     let mut do_spawn = false;
     let mut clear_queue = false;
@@ -205,9 +207,9 @@ pub fn debug_panel(
 
             ui.label("entities");
             for (e, label) in &items {
-                if ui.selectable_label(Some(*e) == selected, label).clicked() {
-                    clicked = Some(*e);
-                }
+                let resp = ui.selectable_label(Some(*e) == selected, label);
+                if resp.clicked() { clicked = Some(*e); } // single click selects 
+                if resp.double_clicked() { focus_double_click = Some(*e); } // double click changes focus 
             }
             ui.separator();
             for line in &detail {
@@ -351,7 +353,7 @@ pub fn debug_panel(
             }
             if let Some(idx) = remove_index && idx < man.queue.len() {
                 man.queue.remove(idx);
-            }
+        }
             if clear_queue {
                 man.queue.clear();
             }
@@ -389,6 +391,9 @@ pub fn debug_panel(
 
     if let Some(e) = clicked {
         selected = Some(e);
+    }
+    if let Some(e) = focus_double_click {
+        state.focus_request = Some(e);
     }
     state.selected = selected;
     state.burn_form = bf;

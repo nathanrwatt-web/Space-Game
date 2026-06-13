@@ -2,8 +2,11 @@ use bevy::prelude::*;
 
 // ==== speed settings ====
 const DAY: f64 = 60.0 * 60.0 * 24.0;
-const WARP_LEVELS: [f64; 6] = [
+const WARP_LEVELS: [f64; 9] = [
     0.0,          // paused
+    0.125 * DAY,
+    0.25 * DAY,
+    0.50 * DAY,
     1.0  * DAY,   // 1 day 
     2.0  * DAY, 
     5.0  * DAY, 

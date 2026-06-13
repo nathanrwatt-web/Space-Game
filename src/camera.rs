@@ -9,7 +9,7 @@ use crate::body_traits::Focusable;
 
 // ===== SETTINGS ===== 
 const ARC_RATE:     f64 = 1.2;      // rads/s for rotating on great circle 
-const ZOOM_STEP:    f64 = 1.15;     // multilpier per wheel notch of mouse wheel 
+const ZOOM_STEP:    f64 = 0.95;     // multilpier per wheel notch of mouse wheel 
 const MIN_DIST:     f64 = 15.0;     // min dist from the body of focus 
 const MAX_DIST:     f64 = 5.0e11;   // max dist from the body of focus 
 const FOCUS_EASE:   f64 = 10.0;      
@@ -20,6 +20,8 @@ pub struct OrbitCam {
     pub focus_point: DVec3,
     pub orientation: DQuat,
     pub distance: f64,
+    pub last_focus: Entity, 
+    pub last_focus_pos: DVec3,
 }
 
 
@@ -65,10 +67,17 @@ pub fn orbit_camera(
     // get the world positition of the entity being orbited or default back to focus_point 
     let target = bodies.get(orbit.focus).map(|w| w.0).unwrap_or(orbit.focus_point);
 
-    let a = 1.0 - (-FOCUS_EASE * dt).exp();  // a = 1 - e^(- FOCUS_EASE * dt)
-    // linearly interpolate between focus_point and target, based on 
-    // the (0, 1) range of values in a 0 -> self, 1 -> target 
-    orbit.focus_point = orbit.focus_point.lerp(target, a); 
+    // if still focusing on the same planet: 
+        if orbit.focus == orbit.last_focus {
+        let last = orbit.last_focus_pos;        // copy out: can't hold two field-borrows through Mut<>
+        orbit.focus_point += target - last;     // displacement since last frame (minus!)
+    }
+    let a = 1.0 - (-FOCUS_EASE * dt).exp();
+    orbit.focus_point = orbit.focus_point.lerp(target, a);
+
+    orbit.last_focus = orbit.focus;
+    orbit.last_focus_pos = target;
+
 
     let offset = orbit.orientation * (DVec3::Z * orbit.distance);
     cam_pos.0 = orbit.focus_point + offset;

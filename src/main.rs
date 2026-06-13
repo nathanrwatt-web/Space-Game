@@ -64,123 +64,86 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let day: f64 = 60.0 * 60.0 * 24.0;
 
-    let mu_star = mu_for_period(160.0, 8.0 * day);
-    let mu_earth = mu_star   * 1.0e-3;              // planet ≈ 1/1000 of the star
-    let mu_moon   = mu_earth * 1.0e-2;              // moon  ≈ 1/100 of the planet
-    
+    let mu_jupiter = 126.687; 
 
-    commands.spawn((
-        PointLight { shadows_enabled: true, ..default() },
+    // sun shines parallel from far away 
+    commands.spawn((DirectionalLight {
+        illuminance: 8000.0,
+        shadows_enabled: false, 
+        ..default() },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, 0.5, 0.0)),
+    ));
+
+    let jupiter = commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(699.00))),
+        MeshMaterial3d(materials.add(Color::srgb(0.80, 0.60, 0.40))),
         Transform::default(),
-        WorldPos::new(120.0, 120.0, 120.0)
-        )
-    );
+        Body {
+            mu: mu_jupiter,
+            radius: 699.00
+        },
+        WorldPos::ORIGIN,
+        Focusable::default(),
+        Name::new("Jupiter")
+    )).id();
 
-    // STAR  - no orbit, fixed position - entity id 
-    let star = commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(60.0))),
-            MeshMaterial3d(materials.add(Color::srgb(1.0, 0.9, 0.4))),
+    // helper to keep the moon spawns short
+    let mut moon = |a: f64, m0: f64, radius: f32, mu: f64, color: Color, name: &str| {
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(radius))),
+            MeshMaterial3d(materials.add(color)),
             Transform::default(),
-            Body{ mu: mu_star, radius: 60.0 },
             WorldPos::ORIGIN,
             Focusable::default(),
-            Name::new("Star"),
-    )).id();
-
-    // Orbital Elements {
-    //  a: Longest Axis,
-    //  e: Eccentricicty, 
-    //  i: Inclination,
-    //  lan: longitiude of ascending node ,
-    //  arg_pe: Argument of periapsis,
-    //  m0: Mean anomaly at epoch,
-    //  epoch: t_0,
-    //  mu: G x M of parent
-    // }
-    let planet = commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(15.0))),
-            MeshMaterial3d(materials.add(Color::srgb(0.4, 0.6, 1.0))),
-            Transform::default(),
-            WorldPos::ORIGIN,
-            Focusable{},
-            Body { mu: mu_earth, radius: 15.0 },
+            Body { mu, radius: radius as f64 },
             Orbit {
                 elements: OrbitalElements {
-                    a: 400.0,
-                    e: 0.0,
-                    i: 0.0,
-                    lan: 0.0,
-                    arg_pe: 0.0,
-                    m0: 0.0,
-                    epoch: 0.0,
-                    mu: mu_star,
+                    a, e: 0.0, i: 0.0, lan: 0.0,
+                    arg_pe: 0.0, m0, epoch: 0.0, mu: mu_jupiter,
                 },
-                parent: star,
+                parent: jupiter,
             },
-            Name::new("Planet"),
-    )).id();
+            Name::new(name.to_string()),
+        ));
+    };
 
-    // moon 
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(5.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.7))),
-        Transform::default(),
-        WorldPos::ORIGIN,
-        Focusable{},
-        Body { mu: mu_moon, radius: 5.0 },
-        Orbit {
-            elements: OrbitalElements {
-                a: 50.0, 
-                e: 0.0,
-                i: 0.0,
-                lan: 0.0, 
-                arg_pe: 0.0,
-                m0: 0.0,
-                epoch: 0.0,
-                mu: mu_earth,
-            },         // mu = PLANET's G·M
-            parent: planet,
-        },
-        Name::new("Moon"),
-    ));
+    // make bigger so noticable 
+    moon(4218.0,  0.0, 18.2 * 2.0, 5.96e-3 * 2.0, Color::srgb(0.90, 0.85, 0.40), "Io");
+    moon(6711.0,  2.5, 15.6 * 2.0, 3.20e-3 * 2.0, Color::srgb(0.85, 0.85, 0.90), "Europa");
+    moon(10704.0, 4.0, 26.3 * 2.0, 9.89e-3 * 2.0, Color::srgb(0.60, 0.55, 0.50), "Ganymede");
+    moon(18827.0, 5.5, 24.1 * 2.0, 7.18e-3 * 2.0, Color::srgb(0.40, 0.40, 0.45), "Callisto");
 
     // ship 
     commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(5.0))),
-            MeshMaterial3d(materials.add(Color::srgb(1.0, 0.3, 0.3))),
-            Transform::default(),
-            Focusable::default(),
-            WorldPos::ORIGIN,
-            Orbit {
-                elements: OrbitalElements {
-                    a: 160.0,
-                    e: 0.0, 
-                    i: 0.0, 
-                    lan: 0.0, 
-                    arg_pe: 0.0, 
-                    m0: 0.0,
-                    epoch: 0.5, 
-                    mu: mu_star,
-                },
-                parent: star,
+        Mesh3d(meshes.add(Sphere::new(15.0))),
+        MeshMaterial3d(materials.add(Color::srgb(1.0, 0.3, 0.3))),
+        Transform::default(),
+        Focusable::default(),
+        WorldPos::ORIGIN,
+        Orbit {
+            elements: OrbitalElements {
+                a: 3000.0, e: 0.0, i: 0.0, lan: 0.0,
+                arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: mu_jupiter,
             },
-            Maneuvers::default(),
-            Name::new("Ship"),
+            parent: jupiter,
+        },
+        Maneuvers::default(),
+        Name::new("Ship"),
     ));
 
-    // camera 
     commands.spawn((
-            Camera3d::default(),
-            Transform::default(),
-            WorldPos::new(0.0, 120.0, 450.0),
-            OrbitCam {
-                focus: star,
-                focus_point: WorldPos::ORIGIN.0,
-                orientation: DQuat::from_rotation_x(-0.6),
-                distance: 600.0,
-            },
+        Camera3d::default(),
+        Transform::default(),
+        WorldPos::new(0.0, 10000.0, 25000.0),
+        OrbitCam {
+            focus: jupiter, 
+            focus_point: WorldPos::ORIGIN.0,
+            orientation: DQuat::from_rotation_x(-0.6),
+            distance: 25000.0,
+            last_focus: jupiter, 
+            last_focus_pos: WorldPos::ORIGIN.0,
+        },
     ));
 }
 
@@ -227,13 +190,31 @@ fn intercept_transfer(
     bodies: Query<(&Orbit, &Body, &Focusable), Without<Maneuvers>>,
     cam: Single<&OrbitCam, With<Camera>>,
 ) {
-    if !debug.open || egui_wants.wants_any_pointer_input() { return; }
+    if !debug.open || egui_wants.wants_any_pointer_input() {
+        info!("No egui or right clicked on egui panel");
+        return; 
+    }
     if click.event.button != PointerButton::Secondary { return; }
 
-    let ship_e = cam.focus;
-    let Ok((ship_orbit, _)) = ships.get(ship_e) else { return; };
-    let Ok((target_orbit, target_body, _)) = bodies.get(click.entity) else { return; };
-    if target_orbit.parent != ship_orbit.parent { return; }
+    let Some(ship_e) = debug.selected else { 
+        info!("No ship selected"); 
+        return;
+    };
+
+    let Ok((ship_orbit, _)) = ships.get(ship_e) else { 
+        info!("intercept: focused entity {ship_e:?} is not a ship");
+        return; 
+    };
+    let Ok((target_orbit, target_body, _)) = bodies.get(click.entity) else {
+        info!("intercept: clicked {:?} is not a targetable body (root/ship/occluder?)", click.entity);
+        return;
+    };
+
+    if target_orbit.parent != ship_orbit.parent { 
+        info!("The parent of the target ({:?}) is not the target of the ship ({:?})",
+            target_orbit.parent, ship_orbit.parent);
+        return; 
+    }
 
     let ship_el = ship_orbit.elements;
     let target_el = target_orbit.elements;
@@ -268,5 +249,12 @@ fn intercept_transfer(
         captured_e: plan.circular.e,
     });
 }
+
+
+
+
+
+
+
 
 

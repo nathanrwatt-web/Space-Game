@@ -10,9 +10,9 @@ use crate::body_traits::Focusable;
 // ===== SETTINGS ===== 
 const ARC_RATE:     f64 = 1.2;      // rads/s for rotating on great circle 
 const ZOOM_STEP:    f64 = 0.95;     // multilpier per wheel notch of mouse wheel 
-const MIN_DIST:     f64 = 15.0;     // min dist from the body of focus 
+const MIN_DIST:     f64 = 25.0;     // min dist from the body of focus 
 const MAX_DIST:     f64 = 5.0e11;   // max dist from the body of focus 
-const FOCUS_EASE:   f64 = 10.0;      
+const FOCUS_EASE:   f64 = 20.0;     
 
 #[derive(Component)]
 pub struct OrbitCam {

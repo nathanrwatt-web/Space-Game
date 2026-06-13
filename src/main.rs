@@ -10,10 +10,7 @@ mod log_capture;
 use camera::{OrbitCam, orbit_camera, focus_on_click};
 use edit::{AppMode, toggle_mode, spawn_handles, position_handles, drag_handle};
 use log_capture::{capture_layer, LogWindow, toggle_log_window, log_panel};
-use sim::orbit::{
-    Orbit, Maneuvers, Burn, Body, 
-    propagate_orbits, draw_orbits, execute_maneuvers,
-};
+use sim::orbit::{Orbit, Maneuvers, Burn, Body, propagate_orbits, draw_orbits, execute_maneuvers};
 use sim::{
     soi::{draw_soi, update_soi, soi_radius},
     clock::{SimClock, warp_keys, advance_clock},
@@ -22,12 +19,7 @@ use sim::{
 };
 use world_pos::WorldPos;
 use body_traits::Focusable;
-use bevy::{
-    app::AppExit,
-    log::LogPlugin,
-    math::DQuat,
-    prelude::*
-};
+use bevy::{app::AppExit, log::LogPlugin, math::DQuat, prelude::*};
 use debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 
@@ -36,42 +28,37 @@ use crate::math::orbital_elements::OrbitalElements;
 fn main() {
    App::new()
        .add_plugins(DefaultPlugins
-           .set(WindowPlugin {
-               primary_window: Some(Window {
-                   title: "Orbital".into(),
-                   ..default()
-               }),
-               ..default()
-            })
-           .set(LogPlugin {
-               custom_layer: capture_layer,
-               ..default()
-           }))
+           .set(WindowPlugin { primary_window: Some(Window { title: "Orbital".into(), ..default() }),..default() })
+           .set(LogPlugin { custom_layer: capture_layer, ..default() }))
        .add_plugins(MeshPickingPlugin)
        .add_plugins(EguiPlugin::default())
        .init_resource::<DebugUi>()
        .init_resource::<LogWindow>()
-       .add_systems(Startup, (setup, spawn_handles))
        .init_resource::<SimClock>()
        .init_state::<AppMode>()
-       // order is important: change time warp -> add time -> calculate orbits -> update camera
-       // advance_clock is gated to Run, so Edit mode freezes the whole sim (everything derives from t)
+       .add_systems(Startup, (setup, spawn_handles))
+       // order dependent systems: 
        .add_systems(Update, (
-               warp_keys, advance_clock.run_if(in_state(AppMode::Run)), debug_burn_key,
-               execute_maneuvers, update_soi, execute_capture, propagate_orbits,
-               orbit_camera,
+               warp_keys,                                       // time change settings 
+               advance_clock.run_if(in_state(AppMode::Run)),    // change the time 
+               debug_burn_key,                                  // Custom burns 
+               execute_maneuvers,                               // regular burns 
+               update_soi,                                      // update spheres of influence
+               execute_capture,                                 // capture bodies in soi 
+               propagate_orbits,                                // update orbit positions 
+               orbit_camera,                                    // update camera 
             ).chain())
-       .add_systems(Update, (draw_orbits, draw_soi).chain()
-            .after(orbit_camera)
-            .run_if(debug_is_open))
+       // draw orbits and soi helper gizmos
+       .add_systems(Update, (draw_orbits, draw_soi).chain().after(orbit_camera).run_if(debug_is_open))
        .add_systems(Update, apply_focus_request.before(orbit_camera))
-       .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
-       // watches for mouse click primary events on entities with focusable and world_pos
+       // after all the position udpates, render it to the screen 
+       .add_systems(PostUpdate, sync_render_space)
+       // mouse click observers 
        .add_observer(focus_on_click)
        .add_observer(intercept_transfer)
        .add_observer(drag_handle)
-       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, exit_game))
-       .add_systems(Update, position_handles.after(orbit_camera))
+       // UI systems 
+       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, exit_game, position_handles.after(orbit_camera)))
        .add_systems(EguiPrimaryContextPass, (debug_panel, log_panel))
        .run();
 }
@@ -271,23 +258,25 @@ fn intercept_transfer(
 }
 
 // double-click in the debug entity list routes here: snap focus + a framing zoom
+// UNCOMMENT TO HAVE VARIABLE ZOOM
 fn apply_focus_request(
     mut ui: ResMut<DebugUi>,
-    bodies: Query<&Body>,
+    // bodies: Query<&Body>,
     mut cam: Single<&mut OrbitCam, With<Camera>>,
 ) {
     let Some(e) = ui.focus_request.take() else { return; };  // consume once
     cam.focus = e;
-    cam.distance = bodies.get(e)
-        .map(|b| (b.radius * 6.0).max(15.0))  // frame the body by its radius
-        .unwrap_or(300.0);                    // ships have no Body → fixed default
+    // cam.distance = bodies.get(e)
+    //     .map(|b| (b.radius * 6.0).max(500.0))  // frame the body by its radius
+    //     .unwrap_or(300.0);                    // ships have no Body → fixed default
 }
 
 fn exit_game(
     keys: Res<ButtonInput<KeyCode>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if keys.just_pressed(KeyCode::KeyP) {
+    if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
 }
+

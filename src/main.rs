@@ -4,8 +4,10 @@ mod sim;
 mod camera;
 mod body_traits;
 mod debug_ui;
+mod edit;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
+use edit::{AppMode, toggle_mode, reshape_on_drag};
 use sim::orbit::{
     Orbit, Maneuvers, Burn, Body, 
     propagate_orbits, draw_orbits, execute_maneuvers,
@@ -41,9 +43,11 @@ fn main() {
        .init_resource::<DebugUi>()
        .add_systems(Startup, setup)
        .init_resource::<SimClock>()
-       // order is important: change time warp -> add time -> calculate orbits -> update camera 
+       .init_state::<AppMode>()
+       // order is important: change time warp -> add time -> calculate orbits -> update camera
+       // advance_clock is gated to Run, so Edit mode freezes the whole sim (everything derives from t)
        .add_systems(Update, (
-               warp_keys, advance_clock, debug_burn_key,
+               warp_keys, advance_clock.run_if(in_state(AppMode::Run)), debug_burn_key,
                execute_maneuvers, update_soi, execute_capture, propagate_orbits,
                orbit_camera,
             ).chain())
@@ -52,10 +56,11 @@ fn main() {
             .run_if(debug_is_open))
        .add_systems(Update, apply_focus_request.before(orbit_camera))
        .add_systems(PostUpdate, sync_render_space /* .before(transform-propagation set) */)
-       // watches for mouse click primary events on entities with focusable and world_pos 
+       // watches for mouse click primary events on entities with focusable and world_pos
        .add_observer(focus_on_click)
        .add_observer(intercept_transfer)
-       .add_systems(Update, toggle_debug_ui)
+       .add_observer(reshape_on_drag)
+       .add_systems(Update, (toggle_debug_ui, toggle_mode))
        .add_systems(EguiPrimaryContextPass, debug_panel)
        .run();
 }
@@ -189,7 +194,6 @@ fn intercept_transfer(
     mut commands: Commands,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
     bodies: Query<(&Orbit, &Body, &Focusable), Without<Maneuvers>>,
-    cam: Single<&OrbitCam, With<Camera>>,
 ) {
     if !debug.open || egui_wants.wants_any_pointer_input() {
         info!("No egui or right clicked on egui panel");
@@ -267,7 +271,3 @@ fn apply_focus_request(
         .map(|b| (b.radius * 6.0).max(15.0))  // frame the body by its radius
         .unwrap_or(300.0);                    // ships have no Body → fixed default
 }
-
-
-
-

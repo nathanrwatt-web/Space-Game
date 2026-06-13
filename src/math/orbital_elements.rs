@@ -165,6 +165,32 @@ impl OrbitalElements {
         self.epoch - self.m0 / self.mean_motion()
     }
 
+    // mean anomaly at time t, wrapped to [0, TAU). M = M_0 + n·(t - t_0)
+    pub(crate) fn mean_anomaly_at(&self, t: f64) -> f64 {
+        (self.m0 + self.mean_motion() * (t - self.epoch)).rem_euclid(TAU)
+    }
+
+    // outward normal of the orbital plane (perifocal +Z rotated into world axes)
+    pub(crate) fn plane_normal(&self) -> DVec3 {
+        self.orientation() * DVec3::Z
+    }
+
+    // Rescale + re-phase so the orbit passes through `point` (parent-relative, world
+    // axes) at time `t`, keeping shape/orientation (e, i, lan, arg_pe). Elliptical only.
+    pub(crate) fn reshape_through(&mut self, point: DVec3, t: f64) {
+        if self.e >= 1.0 { return; }
+        let local = self.orientation().inverse() * point; // into the perifocal frame
+        let nu = local.y.atan2(local.x);                  // grab direction -> true anomaly
+        let r = local.truncate().length().max(1e-9);
+        // keep e; size so r(nu) == r:  a = r(1 + e·cos ν)/(1 − e²)
+        self.a = r * (1.0 + self.e * nu.cos()) / (1.0 - self.e * self.e);
+        // re-phase: put the body at true anomaly nu *now* (ν -> E -> M, matches from_state)
+        let ea = 2.0 * ((1.0 - self.e).sqrt() * (nu * 0.5).sin())
+            .atan2((1.0 + self.e).sqrt() * (nu * 0.5).cos());
+        self.epoch = t;
+        self.m0 = ea - self.e * ea.sin();
+    }
+
     // rightmost applied first means spins by ω -> tilted by i -> swung by Ω
     fn orientation(&self) -> DQuat {
         DQuat::from_rotation_z(self.lan)
@@ -517,5 +543,22 @@ mod tests {
             let vis = (el.mu * (2.0 / r - 1.0 / el.a)).sqrt(); // a<0 ⇒ 2/r − 1/a > 0
             assert!((vmag - vis).abs() / vis < 1e-9, "t={t}: {vmag} vs {vis}");
         }
+    }
+
+    #[test]
+    fn reshape_through_hits_point_and_keeps_shape() {
+        let mut el = elements(1.5e11, 0.3, 0.4, 1.1, 0.7, 0.5);
+        let (e0, i0, lan0, arg0) = (el.e, el.i, el.lan, el.arg_pe);
+        let t = 1.234e7;
+        // a target point lying in the orbital plane (built from the orientation frame)
+        let target = el.orientation() * DVec3::new(2.0e11, 0.7e11, 0.0);
+        el.reshape_through(target, t);
+        // shape + orientation untouched
+        assert!((el.e - e0).abs() < 1e-12, "e changed");
+        assert!((el.i - i0).abs() < 1e-12, "i changed");
+        assert!((el.lan - lan0).abs() < 1e-12, "lan changed");
+        assert!((el.arg_pe - arg0).abs() < 1e-12, "arg_pe changed");
+        // the body now sits at the grab point at time t
+        assert!((el.offset_at(t) - target).length() < 1.0, "body not at grab point");
     }
 }

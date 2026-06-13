@@ -4,6 +4,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
+use crate::edit::AppMode;
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit};
 use crate::math::orbital_elements::OrbitalElements;
@@ -102,12 +103,14 @@ pub fn debug_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<DebugUi>,
     clock: Res<SimClock>,
+    mode: Res<State<AppMode>>,
+    mut next_mode: ResMut<NextState<AppMode>>,
     cam: Single<&OrbitCam, With<Camera>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut entities: Query<
-        (Entity, Option<&Name>, &WorldPos, Option<&Orbit>, Option<&Body>, Option<&mut Maneuvers>),
+        (Entity, Option<&Name>, &WorldPos, Option<&mut Orbit>, Option<&Body>, Option<&mut Maneuvers>),
         Or<(With<Orbit>, With<Body>)>,
     >,
 ) -> Result {
@@ -135,6 +138,7 @@ pub fn debug_panel(
     // ---- detail + cached state for the selected entity ----
     let mut detail: Vec<String> = Vec::new();
     let mut sel_state: Option<(DVec3, DVec3)> = None;
+    let mut sel_el: Option<OrbitalElements> = None;
     let mut sel_is_ship = false;
     let mut sel_queue: Vec<(f64, DVec3)> = Vec::new();
 
@@ -150,6 +154,7 @@ pub fn debug_panel(
             }
             if let Some(o) = orbit {
                 let el = o.elements;
+                sel_el = Some(el);
                 let (r_vec, v_vec) = el.state_vectors_at(t);
                 sel_state = Some((r_vec, v_vec));
                 let r = r_vec.length();
@@ -198,10 +203,29 @@ pub fn debug_panel(
     let mut clear_queue = false;
     let mut remove_index: Option<usize> = None;
 
+    // edit-mode controls
+    let in_edit = *mode.get() == AppMode::Edit;
+    let mut toggle_mode_clicked = false;
+    // editable copy of the selected orbit, re-anchored to "now" so resizing/reshaping
+    // holds the body's current angular position (and resume is seamless)
+    let mut edit_el = sel_el.map(|el| {
+        let mut x = el;
+        x.m0 = el.mean_anomaly_at(t);
+        x.epoch = t;
+        x
+    });
+    let mut el_changed = false;
+
     egui::Window::new("Debug")
         .open(&mut open)
         .default_width(340.0)
         .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(if in_edit { "MODE: EDIT (paused)" } else { "MODE: RUN" });
+                if ui.button(if in_edit { "▶ Run" } else { "⏸ Edit" }).clicked() {
+                    toggle_mode_clicked = true;
+                }
+            });
             ui.label(format!("t = {t:.1} s     warp = {warp:.0} sim-s/s"));
             ui.separator();
 
@@ -214,6 +238,30 @@ pub fn debug_panel(
             ui.separator();
             for line in &detail {
                 ui.label(line);
+            }
+
+            // --- edit orbital elements (Edit mode, on-rails entity) ---
+            if in_edit && let Some(ee) = edit_el.as_mut() {
+                ui.separator();
+                ui.label("edit orbit (epoch = now)");
+                ui.horizontal(|ui| {
+                    ui.label("a");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.a).speed(1.0)).changed();
+                    ui.label("e");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.e).speed(0.001)).changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("i");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.i).speed(0.01)).changed();
+                    ui.label("lan");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.lan).speed(0.01)).changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("arg_pe");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.arg_pe).speed(0.01)).changed();
+                    ui.label("m0");
+                    el_changed |= ui.add(egui::DragValue::new(&mut ee.m0).speed(0.01)).changed();
+                });
             }
 
             if sel_is_ship {
@@ -387,6 +435,17 @@ pub fn debug_panel(
                 SpawnKind::Body => { ec.insert(Body { mu: sf.mu, radius: sf.mesh_radius as f64 }); }
                 SpawnKind::Ship => { ec.insert(Maneuvers::default()); }
             }
+    }
+
+    // write edited elements back to the selected entity (uses the displayed selection,
+    // before any click below reassigns it)
+    if el_changed && let Some(target) = selected && let Some(new_el) = edit_el
+        && let Ok((.., Some(mut orbit), _, _)) = entities.get_mut(target) {
+            orbit.elements = new_el;
+        }
+
+    if toggle_mode_clicked {
+        next_mode.set(if in_edit { AppMode::Run } else { AppMode::Edit });
     }
 
     if let Some(e) = clicked {

@@ -5,9 +5,11 @@ mod camera;
 mod body_traits;
 mod debug_ui;
 mod edit;
+mod log_capture;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use edit::{AppMode, toggle_mode, reshape_on_drag};
+use edit::{AppMode, toggle_mode, spawn_handles, position_handles, drag_handle};
+use log_capture::{capture_layer, LogWindow, toggle_log_window, log_panel};
 use sim::orbit::{
     Orbit, Maneuvers, Burn, Body, 
     propagate_orbits, draw_orbits, execute_maneuvers,
@@ -21,6 +23,8 @@ use sim::{
 use world_pos::WorldPos;
 use body_traits::Focusable;
 use bevy::{
+    app::AppExit,
+    log::LogPlugin,
     math::DQuat,
     prelude::*
 };
@@ -31,17 +35,23 @@ use crate::math::orbital_elements::OrbitalElements;
 
 fn main() {
    App::new()
-       .add_plugins(DefaultPlugins.set(WindowPlugin {
-           primary_window: Some(Window {
-               title: "Orbital".into(),
+       .add_plugins(DefaultPlugins
+           .set(WindowPlugin {
+               primary_window: Some(Window {
+                   title: "Orbital".into(),
+                   ..default()
+               }),
                ..default()
-           }),
-           ..default()
-        }))
+            })
+           .set(LogPlugin {
+               custom_layer: capture_layer,
+               ..default()
+           }))
        .add_plugins(MeshPickingPlugin)
        .add_plugins(EguiPlugin::default())
        .init_resource::<DebugUi>()
-       .add_systems(Startup, setup)
+       .init_resource::<LogWindow>()
+       .add_systems(Startup, (setup, spawn_handles))
        .init_resource::<SimClock>()
        .init_state::<AppMode>()
        // order is important: change time warp -> add time -> calculate orbits -> update camera
@@ -59,9 +69,10 @@ fn main() {
        // watches for mouse click primary events on entities with focusable and world_pos
        .add_observer(focus_on_click)
        .add_observer(intercept_transfer)
-       .add_observer(reshape_on_drag)
-       .add_systems(Update, (toggle_debug_ui, toggle_mode))
-       .add_systems(EguiPrimaryContextPass, debug_panel)
+       .add_observer(drag_handle)
+       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, exit_game))
+       .add_systems(Update, position_handles.after(orbit_camera))
+       .add_systems(EguiPrimaryContextPass, (debug_panel, log_panel))
        .run();
 }
 
@@ -270,4 +281,13 @@ fn apply_focus_request(
     cam.distance = bodies.get(e)
         .map(|b| (b.radius * 6.0).max(15.0))  // frame the body by its radius
         .unwrap_or(300.0);                    // ships have no Body → fixed default
+}
+
+fn exit_game(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if keys.just_pressed(KeyCode::KeyP) {
+        exit.write(AppExit::Success);
+    }
 }

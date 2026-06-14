@@ -204,6 +204,8 @@ fn intercept_transfer(
         return;
     };
 
+    // TODO, the ship needs to be able to travel back to the root
+
     // make sure the selected ship is indeed a ship
     let Ok((ship_orbit, _)) = ships.get(ship_e) else { 
         info!("intercept: focused entity {ship_e:?} is not a ship");

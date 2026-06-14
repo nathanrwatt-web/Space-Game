@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::math::{DVec3, DQuat};
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy_egui::input::EguiWantsInput;
+use serde::{Serialize, Deserialize};
 
 use crate::world_pos::WorldPos;
 use crate::body_traits::Focusable;
@@ -14,7 +15,7 @@ const MIN_DIST:     f64 = 25.0;     // min dist from the body of focus
 const MAX_DIST:     f64 = 5.0e11;   // max dist from the body of focus 
 const FOCUS_EASE:   f64 = 20.0;     
 
-#[derive(Component)]
+#[derive(Component, Serialize, Deserialize)]
 pub struct OrbitCam {
     pub focus: Entity,      // body of focus 
     pub focus_point: DVec3,

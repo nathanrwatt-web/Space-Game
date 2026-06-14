@@ -6,6 +6,7 @@ use crate::sim::clock::SimClock;
 use crate::world_pos::WorldPos;
 use crate::math::orbital_elements::OrbitalElements;
 use std::collections::VecDeque;
+use serde::{Serialize, Deserialize};
 
 #[derive(Component)] 
 pub struct Orbit {
@@ -14,13 +15,13 @@ pub struct Orbit {
 }
 // note: we keep track of the paretn ourself since the bevy ChildOf works in f32
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, Serialize, Deserialize)]
 pub struct Burn {
-    pub execute_at: f64, // time to fire 
-    pub dv: DVec3, // velocity change 
+    pub execute_at: f64, // time to fire
+    pub dv: DVec3, // velocity change
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, Serialize, Deserialize)]
 pub struct Maneuvers {
     pub queue: VecDeque<Burn>,
 }

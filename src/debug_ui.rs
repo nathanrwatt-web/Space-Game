@@ -4,7 +4,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
-use crate::edit::AppMode;
+use crate::game_state::GameState;
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit};
 use crate::math::orbital_elements::OrbitalElements;
@@ -103,8 +103,8 @@ pub fn debug_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<DebugUi>,
     clock: Res<SimClock>,
-    mode: Res<State<AppMode>>,
-    mut next_mode: ResMut<NextState<AppMode>>,
+    mode: Res<State<GameState>>,
+    mut next_mode: ResMut<NextState<GameState>>,
     cam: Single<&OrbitCam, With<Camera>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -204,7 +204,7 @@ pub fn debug_panel(
     let mut remove_index: Option<usize> = None;
 
     // edit-mode controls
-    let in_edit = *mode.get() == AppMode::Edit;
+    let in_edit = *mode.get() == GameState::Editing;
     let mut toggle_mode_clicked = false;
     // editable copy of the selected orbit, re-anchored to "now" so resizing/reshaping
     // holds the body's current angular position (and resume is seamless)
@@ -445,7 +445,7 @@ pub fn debug_panel(
         }
 
     if toggle_mode_clicked {
-        next_mode.set(if in_edit { AppMode::Run } else { AppMode::Edit });
+        next_mode.set(if in_edit { GameState::Running } else { GameState::Editing });
     }
 
     if let Some(e) = clicked {

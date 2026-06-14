@@ -1,7 +1,8 @@
 use bevy::math::{DVec3, DQuat};
 use std::f64::consts::TAU;
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) struct OrbitalElements {
     // ==== SHAPE AND SIZE ====
     // semi major axis of the elpise 

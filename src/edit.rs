@@ -4,31 +4,12 @@ use std::f64::consts::{PI, TAU};
 
 use crate::camera::OrbitCam;
 use crate::debug_ui::DebugUi;
+use crate::game_state::GameState;
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::Orbit;
 use crate::world_pos::WorldPos;
 
-// Run is a live sim, edit is paused and bodies can be moved 
-#[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AppMode {
-    #[default]
-    Run,
-    Edit,
-}
 
-// Tab flips between modes
-pub fn toggle_mode(
-    keys: Res<ButtonInput<KeyCode>>,
-    mode: Res<State<AppMode>>,
-    mut next: ResMut<NextState<AppMode>>,
-) {
-    if keys.just_pressed(KeyCode::Tab) {
-        next.set(match mode.get() {     // Resources are singular mode.get returns AppMode. 
-            AppMode::Run => AppMode::Edit,
-            AppMode::Edit => AppMode::Run,
-        });
-    }
-}
 #[derive(Clone, Copy, PartialEq)]
 pub enum HandleAxis { Radial, AlongTrack, Normal }
 
@@ -76,7 +57,7 @@ pub fn spawn_handles(
 
 // place and show handles on the selcted body 
 pub fn position_handles(
-    mode: Res<State<AppMode>>,
+    mode: Res<State<GameState>>,
     debug: Res<DebugUi>,
     cam: Single<(&OrbitCam, &WorldPos), (With<Camera>, Without<EditHandle>)>, // for disjointess
     orbits: Query<(&WorldPos, &Orbit)>,
@@ -88,7 +69,7 @@ pub fn position_handles(
     let (orbit_cam, cam_wp) = *cam;
     let target = debug.selected.unwrap_or(orbit_cam.focus);
 
-    let found = (*mode.get() == AppMode::Edit)
+    let found = (*mode.get() == GameState::Editing)
         .then(|| orbits.get(target).ok())
         .flatten()
         .and_then(|(body_wp, orbit) | {
@@ -128,7 +109,7 @@ pub fn position_handles(
 
 pub fn drag_handle(
     drag: On<Pointer<Drag>>,
-    mode: Res<State<AppMode>>,
+    mode: Res<State<GameState>>,
     egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
     debug: Res<DebugUi>,
@@ -137,7 +118,7 @@ pub fn drag_handle(
     mut orbits: Query<&mut Orbit>,
     cam: Single<(&Camera, &GlobalTransform, &WorldPos, &OrbitCam)>,
 ) {
-    if *mode.get() != AppMode::Edit { return; }
+    if *mode.get() != GameState::Editing { return; }
     if egui_wants.wants_any_pointer_input() { return; }
     if drag.event.button != PointerButton::Primary { return; }
 

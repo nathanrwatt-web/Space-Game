@@ -6,9 +6,10 @@ mod body_traits;
 mod debug_ui;
 mod edit;
 mod log_capture;
+mod game_state;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use edit::{AppMode, toggle_mode, spawn_handles, position_handles, drag_handle};
+use edit::{spawn_handles, position_handles, drag_handle};
 use log_capture::{capture_layer, LogWindow, toggle_log_window, log_panel};
 use sim::orbit::{Orbit, Maneuvers, Burn, Body, propagate_orbits, draw_orbits, execute_maneuvers};
 use sim::{
@@ -22,6 +23,8 @@ use body_traits::Focusable;
 use bevy::{app::AppExit, log::LogPlugin, math::DQuat, prelude::*};
 use debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
+use game_state::{GameState, load_scene, save_scene, toggle_mode, menu_panel};
+
 
 use crate::math::orbital_elements::OrbitalElements;
 
@@ -35,12 +38,14 @@ fn main() {
        .init_resource::<DebugUi>()
        .init_resource::<LogWindow>()
        .init_resource::<SimClock>()
-       .init_state::<AppMode>()
+       .init_state::<GameState>()
+       .add_systems(OnEnter(GameState::Loading), load_scene)
+       .add_systems(OnEnter(GameState::Saving), save_scene)
        .add_systems(Startup, (setup, spawn_handles))
        // order dependent systems: 
        .add_systems(Update, (
                warp_keys,                                       // time change settings 
-               advance_clock.run_if(in_state(AppMode::Run)),    // change the time 
+               advance_clock.run_if(in_state(GameState::Running)),    // change the time 
                debug_burn_key,                                  // Custom burns 
                execute_maneuvers,                               // regular burns 
                update_soi,                                      // update spheres of influence
@@ -59,18 +64,13 @@ fn main() {
        .add_observer(drag_handle)
        // UI systems 
        .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, exit_game, position_handles.after(orbit_camera)))
-       .add_systems(EguiPrimaryContextPass, (debug_panel, log_panel))
+       .add_systems(EguiPrimaryContextPass, (debug_panel, log_panel, menu_panel.run_if(in_state(GameState::Paused))))
        .run();
 }
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-
-    let mu_jupiter = 126.687; 
-
     // sun shines parallel from far away 
     commands.spawn((DirectionalLight {
         illuminance: 8000.0,
@@ -79,73 +79,16 @@ fn setup(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, 0.5, 0.0)),
     ));
 
-    let jupiter = commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(699.00))),
-        MeshMaterial3d(materials.add(Color::srgb(0.80, 0.60, 0.40))),
-        Transform::default(),
-        Body {
-            mu: mu_jupiter,
-            radius: 699.00
-        },
-        WorldPos::ORIGIN,
-        Focusable::default(),
-        Name::new("Jupiter")
-    )).id();
-
-    // helper to keep the moon spawns short
-    let mut moon = |a: f64, m0: f64, radius: f32, mu: f64, color: Color, name: &str| {
-        commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(radius))),
-            MeshMaterial3d(materials.add(color)),
-            Transform::default(),
-            WorldPos::ORIGIN,
-            Focusable::default(),
-            Body { mu, radius: radius as f64 },
-            Orbit {
-                elements: OrbitalElements {
-                    a, e: 0.0, i: 0.0, lan: 0.0,
-                    arg_pe: 0.0, m0, epoch: 0.0, mu: mu_jupiter,
-                },
-                parent: jupiter,
-            },
-            Name::new(name.to_string()),
-        ));
-    };
-
-    // make bigger so noticable 
-    moon(4218.0,  0.0, 18.2 * 2.0, 5.96e-3 * 2.0, Color::srgb(0.90, 0.85, 0.40), "Io");
-    moon(6711.0,  2.5, 15.6 * 2.0, 3.20e-3 * 2.0, Color::srgb(0.85, 0.85, 0.90), "Europa");
-    moon(10704.0, 4.0, 26.3 * 2.0, 9.89e-3 * 2.0, Color::srgb(0.60, 0.55, 0.50), "Ganymede");
-    moon(18827.0, 5.5, 24.1 * 2.0, 7.18e-3 * 2.0, Color::srgb(0.40, 0.40, 0.45), "Callisto");
-
-    // ship 
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(15.0))),
-        MeshMaterial3d(materials.add(Color::srgb(1.0, 0.3, 0.3))),
-        Transform::default(),
-        Focusable::default(),
-        WorldPos::ORIGIN,
-        Orbit {
-            elements: OrbitalElements {
-                a: 3000.0, e: 0.0, i: 0.0, lan: 0.0,
-                arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: mu_jupiter,
-            },
-            parent: jupiter,
-        },
-        Maneuvers::default(),
-        Name::new("Ship"),
-    ));
-
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
         WorldPos::new(0.0, 10000.0, 25000.0),
         OrbitCam {
-            focus: jupiter, 
+            focus: Entity::PLACEHOLDER, 
             focus_point: WorldPos::ORIGIN.0,
             orientation: DQuat::from_rotation_x(-0.6),
             distance: 25000.0,
-            last_focus: jupiter, 
+            last_focus: Entity::PLACEHOLDER, 
             last_focus_pos: WorldPos::ORIGIN.0,
         },
     ));

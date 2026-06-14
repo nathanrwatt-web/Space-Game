@@ -13,11 +13,13 @@
 
 use bevy::prelude::*;
 use bevy::math::{DVec3};
+use serde::{Serialize, Deserialize};
 
 // include component for ECS (enttiy, component, system)
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldPos(pub DVec3);
 
+#[allow(dead_code)] // helpers for test 
 impl WorldPos {
     pub const ORIGIN: Self = WorldPos(DVec3::ZERO);
 
@@ -25,12 +27,12 @@ impl WorldPos {
         Self(DVec3::new(x,y,z))
     }
 
-    pub fn translate(self, delta: DVec3) -> Self {
+    fn translate(self, delta: DVec3) -> Self {
         Self(self.0 + delta)
     }
 
     // displacement from self to other
-    pub fn delta_to(self, other: Self) -> DVec3 {
+    fn delta_to(self, other: Self) -> DVec3 {
         other.0 - self.0
     }
 

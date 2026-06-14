@@ -2,27 +2,29 @@ use crate::math::orbital_elements::OrbitalElements;
 use crate::world_pos::WorldPos;
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
-use crate::sim::orbit::{Body, Orbit};
+use crate::sim::orbit::{Body, Orbit, Maneuvers};
 use crate::sim::clock::SimClock;
-use crate::sim::orbit::{Maneuvers, Burn};
+use crate::worlds::{self, CurrentWorld, WorldMeta};
 
 use bevy::math::DQuat;
-use bevy::app::AppExit;
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
-
-const SAVE_PATH: &str = "assets.save.ron";
 
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameState {
     #[default]
-    Loading, 
-    Running, 
-    Editing, 
-    Paused, 
+    MainMenu,
+    Loading,
+    Running,
+    Editing,
+    Paused,
     Saving,
+}
+
+// gameplay systems run only inside a loaded world (not on the start screen / during load)
+pub fn in_game(state: Res<State<GameState>>) -> bool {
+    !matches!(state.get(), GameState::MainMenu | GameState::Loading)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -123,72 +125,74 @@ pub fn toggle_mode(
     }
 }
 
-// The pause menu. Registered with run_if(in_state(Paused)) so it only renders while paused;
-// the clock is already frozen because advance_clock only runs in Running.
-pub fn menu_panel(
-    mut contexts: EguiContexts,
-    mut next: ResMut<NextState<GameState>>,
-    mut exit: MessageWriter<AppExit>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    egui::Window::new("paused")
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading("Paused");
-                ui.add_space(8.0);
-                if ui.button("Resume").clicked() { next.set(GameState::Running); }
-                if ui.button("Save").clicked()   { next.set(GameState::Saving); }
-                if ui.button("Quit").clicked()   { exit.write(AppExit::Success); }
-            });
-        });
-    Ok(())
+// OnEnter(MainMenu): tear down the loaded world so we can return to the start screen.
+// Uses plain queries (not Single) so it's a harmless no-op the first time MainMenu is entered,
+// before Startup has spawned the camera.
+pub fn despawn_world(
+    mut commands: Commands,
+    bodies: Query<Entity, With<Appearance>>,
+    mut cams: Query<&mut OrbitCam>,
+    mut current: ResMut<CurrentWorld>,
+) {
+    for e in &bodies {
+        commands.entity(e).despawn();
+    }
+    for mut cam in &mut cams {
+        cam.focus = Entity::PLACEHOLDER;
+        cam.last_focus = Entity::PLACEHOLDER;
+    }
+    current.0 = None;
 }
 
 
-// OnEnter(Loading): read the RON file (or write+use a default), spawn it, then enter Running.
+// OnEnter(Loading): load the current world's folder (seeding a default if it's a new world),
+// spawn it, reconfigure the persistent camera, freeze the clock, then enter Running.
 pub fn load_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut clock: ResMut<SimClock>,
     mut next: ResMut<NextState<GameState>>,
+    current: Res<CurrentWorld>,
+    camera: Single<(&mut OrbitCam, &mut WorldPos)>,
 ) {
-    let file: SystemFile = match std::fs::read_to_string(SAVE_PATH) {
-        Ok(text) => match ron::from_str::<SystemFile>(&text) {
-            Ok(f) => f,
-            Err(e) => { warn!("save parse failed: {e}; rewriting default"); write_default() }
-        },
-        Err(_) => write_default(), // file missing on first run
+    let Some(name) = current.0.as_deref() else {
+        error!("load_scene: no current world set; returning to menu");
+        next.set(GameState::MainMenu);
+        return;
+    };
+
+    let path = worlds::system_path(name);
+    let file: SystemFile = match worlds::read_ron::<SystemFile>(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            // new world (or unreadable) → seed from the default scene and persist it
+            info!("load '{name}': {e}; seeding default");
+            let file = default_system();
+            if let Err(e) = worlds::write_ron(&path, &file) {
+                error!("load: couldn't write default world: {e}");
+            }
+            worlds::write_ron(&worlds::meta_path(name), &WorldMeta { sim_time: file.sim_time }).ok();
+            file
+        }
     };
 
     let by_name = spawn_system(&file, &mut commands, &mut meshes, &mut materials);
     clock.t = file.sim_time;
+    clock.pause(); // worlds always load frozen (warp 0)
 
-    // Spawn the camera from the saved description. This OnEnter runs BEFORE Startup, so we
-    // create the camera here rather than expecting one to already exist (a missing Single
-    // would otherwise skip this whole system). Falls back to sensible defaults.
-    let desc = file.camera.as_ref();
-    let focus = desc.and_then(|d| by_name.get(&d.focus_entity).copied()).unwrap_or(Entity::PLACEHOLDER);
-    let orientation = desc.map(|d| d.orientation).unwrap_or(DQuat::from_rotation_x(-0.6));
-    let distance = desc.map(|d| d.distance).unwrap_or(25000.0);
-    let cam_pos = desc.and_then(|d| d.world_pos).unwrap_or(WorldPos::new(0.0, 10000.0, 25000.0));
-    commands.spawn((
-        Camera3d::default(),
-        Transform::default(),
-        cam_pos,
-        OrbitCam {
-            focus,
-            focus_point: WorldPos::ORIGIN.0,
-            orientation,
-            distance,
-            last_focus: focus,
-            last_focus_pos: WorldPos::ORIGIN.0,
-        },
-    ));
+    // reconfigure the persistent camera (spawned at Startup) from the saved description
+    let (mut orbit_cam, mut cam_wp) = camera.into_inner();
+    if let Some(desc) = &file.camera {
+        let focus = by_name.get(&desc.focus_entity).copied().unwrap_or(Entity::PLACEHOLDER);
+        orbit_cam.focus = focus;
+        orbit_cam.last_focus = focus;
+        orbit_cam.orientation = desc.orientation;
+        orbit_cam.distance = desc.distance;
+        if let Some(wp) = desc.world_pos {
+            cam_wp.0 = wp.0;
+        }
+    }
 
     next.set(GameState::Running);
 }
@@ -252,6 +256,7 @@ fn spawn_system(
 // OnEnter(Saving): serialize the live world to RON, then return to the pause menu.
 pub fn save_scene(
     clock: Res<SimClock>,
+    current: Res<CurrentWorld>,
     bodies: Query<(
         &Name,
         &Appearance,
@@ -265,6 +270,12 @@ pub fn save_scene(
     camera: Single<(&OrbitCam, &WorldPos)>,
     mut next: ResMut<NextState<GameState>>,
 ) {
+    let Some(name) = current.0.as_deref() else {
+        warn!("save: no current world; nothing written");
+        next.set(GameState::Paused);
+        return;
+    };
+
     let mut descs = Vec::new();
     for (name, appearance, world_pos, orbit, body, maneuvers, focusable) in &bodies {
         descs.push(BodyDescription {
@@ -293,12 +304,12 @@ pub fn save_scene(
         }),
     };
 
-    match ron::ser::to_string_pretty(&file, ron::ser::PrettyConfig::default()) {
-        Ok(text) => match std::fs::write(SAVE_PATH, text) {
-            Ok(()) => info!("saved {} bodies to {}", file.bodies.len(), SAVE_PATH),
-            Err(e) => error!("save: write failed: {e}"),
-        },
-        Err(e) => error!("save: serialize failed: {e}"),
+    match worlds::write_ron(&worlds::system_path(name), &file) {
+        Ok(()) => {
+            worlds::write_ron(&worlds::meta_path(name), &WorldMeta { sim_time: file.sim_time }).ok();
+            info!("saved {} bodies to world '{name}'", file.bodies.len());
+        }
+        Err(e) => error!("save: write failed: {e}"),
     }
 
     next.set(GameState::Paused);
@@ -363,18 +374,5 @@ fn default_system() -> SystemFile {
             },
         ],
     }
-}
-
-
-// write default to save file and log errors, while making sure the game can run 
-fn write_default() -> SystemFile {
-    let file = default_system();
-    match ron::ser::to_string_pretty(&file, ron::ser::PrettyConfig::default()) {
-        Ok(text) => if let Err(e) = std::fs::write(SAVE_PATH, text) {
-            error!("couldn't write default save: {e}");
-        },
-        Err(e) => error!("couldn't serialize default save: {e}"),
-    }
-    file
 }
 

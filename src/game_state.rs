@@ -156,7 +156,6 @@ pub fn load_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut clock: ResMut<SimClock>,
     mut next: ResMut<NextState<GameState>>,
-    camera: Single<(&mut OrbitCam, &mut WorldPos)>,
 ) {
     let file: SystemFile = match std::fs::read_to_string(SAVE_PATH) {
         Ok(text) => match ron::from_str::<SystemFile>(&text) {
@@ -166,20 +165,30 @@ pub fn load_scene(
         Err(_) => write_default(), // file missing on first run
     };
 
-    let by_name = spawn_system(&file, &mut commands, &mut meshes, &mut materials); // not used yet... 
+    let by_name = spawn_system(&file, &mut commands, &mut meshes, &mut materials);
     clock.t = file.sim_time;
 
-    // set up camera 
-    if let Some(desc) = &file.camera {
-        let (mut orbit_cam, mut cam_wp) = camera.into_inner();
-        let focus = by_name.get(&desc.focus_entity).copied().unwrap_or(Entity::PLACEHOLDER);
-        orbit_cam.focus = focus;
-        orbit_cam.last_focus = focus;
-        orbit_cam.orientation = desc.orientation;
-        orbit_cam.distance = desc.distance;
-        if let Some(wp) = desc.world_pos { cam_wp.0 = wp.0; }
-    }
-
+    // Spawn the camera from the saved description. This OnEnter runs BEFORE Startup, so we
+    // create the camera here rather than expecting one to already exist (a missing Single
+    // would otherwise skip this whole system). Falls back to sensible defaults.
+    let desc = file.camera.as_ref();
+    let focus = desc.and_then(|d| by_name.get(&d.focus_entity).copied()).unwrap_or(Entity::PLACEHOLDER);
+    let orientation = desc.map(|d| d.orientation).unwrap_or(DQuat::from_rotation_x(-0.6));
+    let distance = desc.map(|d| d.distance).unwrap_or(25000.0);
+    let cam_pos = desc.and_then(|d| d.world_pos).unwrap_or(WorldPos::new(0.0, 10000.0, 25000.0));
+    commands.spawn((
+        Camera3d::default(),
+        Transform::default(),
+        cam_pos,
+        OrbitCam {
+            focus,
+            focus_point: WorldPos::ORIGIN.0,
+            orientation,
+            distance,
+            last_focus: focus,
+            last_focus_pos: WorldPos::ORIGIN.0,
+        },
+    ));
 
     next.set(GameState::Running);
 }

@@ -20,13 +20,11 @@ use sim::{
 };
 use world_pos::WorldPos;
 use body_traits::Focusable;
-use bevy::{app::AppExit, log::LogPlugin, math::DQuat, prelude::*};
+use bevy::{log::LogPlugin, prelude::*};
 use debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 use game_state::{GameState, load_scene, save_scene, toggle_mode, menu_panel};
 
-
-use crate::math::orbital_elements::OrbitalElements;
 
 fn main() {
    App::new()
@@ -63,34 +61,22 @@ fn main() {
        .add_observer(intercept_transfer)
        .add_observer(drag_handle)
        // UI systems 
-       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, exit_game, position_handles.after(orbit_camera)))
+       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, position_handles.after(orbit_camera)))
        .add_systems(EguiPrimaryContextPass, (debug_panel, log_panel, menu_panel.run_if(in_state(GameState::Paused))))
        .run();
 }
 
+// Light only — the camera is spawned by load_scene (OnEnter(Loading)), which runs before
+// Startup, so the scene + camera come from the save file in one place.
 fn setup(
     mut commands: Commands,
 ) {
-    // sun shines parallel from far away 
+    // sun shines parallel from far away
     commands.spawn((DirectionalLight {
         illuminance: 8000.0,
-        shadows_enabled: false, 
+        shadows_enabled: false,
         ..default() },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, 0.5, 0.0)),
-    ));
-
-    commands.spawn((
-        Camera3d::default(),
-        Transform::default(),
-        WorldPos::new(0.0, 10000.0, 25000.0),
-        OrbitCam {
-            focus: Entity::PLACEHOLDER, 
-            focus_point: WorldPos::ORIGIN.0,
-            orientation: DQuat::from_rotation_x(-0.6),
-            distance: 25000.0,
-            last_focus: Entity::PLACEHOLDER, 
-            last_focus_pos: WorldPos::ORIGIN.0,
-        },
     ));
 }
 
@@ -216,12 +202,4 @@ fn apply_focus_request(
     //     .unwrap_or(300.0);                    // ships have no Body → fixed default
 }
 
-fn exit_game(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-    }
-}
 

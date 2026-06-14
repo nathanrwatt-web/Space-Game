@@ -9,6 +9,7 @@ mod log_capture;
 mod game_state;
 mod worlds;
 mod menu;
+mod editor;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
 use edit::{spawn_handles, position_handles, drag_handle};
@@ -25,9 +26,13 @@ use body_traits::Focusable;
 use bevy::{log::LogPlugin, math::DQuat, prelude::*};
 use debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
-use game_state::{GameState, in_game, load_scene, save_scene, toggle_mode, despawn_world};
+use game_state::{AppMode, GameState, not_menu, load_scene, save_scene, toggle_mode, despawn_world};
 use menu::{start_screen, pause_menu};
 use worlds::CurrentWorld;
+use editor::{
+    CurrentLevel, EditorCamera, EditorSaveRequest,
+    editor_setup, editor_teardown, editor_time, save_level, fly_camera, editor_panel,
+};
 
 
 fn main() {
@@ -37,49 +42,71 @@ fn main() {
            .set(LogPlugin { custom_layer: capture_layer, ..default() }))
        .add_plugins(MeshPickingPlugin)
        .add_plugins(EguiPlugin::default())
+       // F1 in the game 
        .init_resource::<DebugUi>()
+       // info!() mirror 
        .init_resource::<LogWindow>()
+       // time keeping resource 
        .init_resource::<SimClock>()
+       // resources for current file being used 
        .init_resource::<CurrentWorld>()
-       .init_state::<GameState>()
-       .add_systems(OnEnter(GameState::MainMenu), despawn_world)
+       .init_resource::<CurrentLevel>()
+       // non azimuthal camera: free from 
+       .init_resource::<EditorCamera>()
+       .init_resource::<EditorSaveRequest>()
+       // while running states 
+       .init_state::<AppMode>()
+       // Menu / Running / Editting 
+       .add_sub_state::<GameState>()
+       // run (world) lifecycle
+       .add_systems(OnExit(AppMode::Run), despawn_world)
        .add_systems(OnEnter(GameState::Loading), load_scene)
        .add_systems(OnEnter(GameState::Saving), save_scene)
+       // edit (level editor) lifecycle
+       .add_systems(OnEnter(AppMode::Edit), editor_setup)
+       .add_systems(OnExit(AppMode::Edit), editor_teardown)
        .add_systems(Startup, (setup, spawn_handles))
-       // gameplay: runs only inside a loaded world (gated off on the start screen + during load)
+       // gameplay: runs only inside a loaded world
        .add_systems(Update, (
-               warp_keys,                                       // time change settings
+               warp_keys,                                             // time change settings
                advance_clock.run_if(in_state(GameState::Running)),    // change the time
-               debug_burn_key,                                  // Custom burns
-               execute_maneuvers,                               // regular burns
-               update_soi,                                      // update spheres of influence
-               execute_capture,                                 // capture bodies in soi
-               propagate_orbits,                                // update orbit positions
-               orbit_camera,                                    // update camera
-            ).chain().run_if(in_game))
-       // draw orbits and soi helper gizmos
-       .add_systems(Update, (draw_orbits, draw_soi).chain().after(orbit_camera).run_if(debug_is_open).run_if(in_game))
-       .add_systems(Update, apply_focus_request.before(orbit_camera).run_if(in_game))
-       // after all the position udpates, render it to the screen
-       .add_systems(PostUpdate, sync_render_space.run_if(in_game))
+               debug_burn_key,                                        // Custom burns
+               execute_maneuvers,                                     // regular burns
+               update_soi,                                            // update spheres of influence
+               execute_capture,                                       // capture bodies in soi
+               propagate_orbits,                                      // update orbit positions
+               orbit_camera,                                          // update camera
+            ).chain().run_if(in_state(AppMode::Run)))
+       // editor: free camera + time stepping + save (Edit only)
+       .add_systems(Update, (fly_camera, editor_time, save_level).run_if(in_state(AppMode::Edit)))
+       // draw orbits and soi helper gizmos (Run or Edit, when debug is open)
+       .add_systems(Update, (draw_orbits, draw_soi).chain().after(orbit_camera).run_if(debug_is_open).run_if(not_menu))
+       .add_systems(Update, apply_focus_request.before(orbit_camera).run_if(in_state(AppMode::Run)))
+       // after all the position udpates, render it to the screen (any non-menu mode)
+       .add_systems(PostUpdate, sync_render_space.run_if(not_menu))
        // mouse click observers
        .add_observer(focus_on_click)
        .add_observer(intercept_transfer)
        .add_observer(drag_handle)
-       // input + UI systems
-       .add_systems(Update, (toggle_debug_ui, toggle_mode, toggle_log_window, position_handles.after(orbit_camera).run_if(in_game)))
+       // input + GUI systems
+       .add_systems(Update, (
+               toggle_debug_ui,
+               toggle_log_window,
+               toggle_mode.run_if(in_state(AppMode::Run)),
+               position_handles.after(orbit_camera).run_if(in_state(AppMode::Run)),
+            ))
        .add_systems(EguiPrimaryContextPass, (
-               debug_panel,
+               debug_panel.run_if(in_state(AppMode::Run)),
                log_panel,
-               start_screen.run_if(in_state(GameState::MainMenu)),
+               start_screen.run_if(in_state(AppMode::Menu)),
                pause_menu.run_if(in_state(GameState::Paused)),
+               editor_panel.run_if(in_state(AppMode::Edit)),
             ))
        .run();
 }
 
-// Persistent infrastructure: light + camera. The camera lives for the whole app (so egui
-// always has a camera and menu↔game transitions don't churn it); load_scene reconfigures its
-// OrbitCam from the loaded world, and despawn_world only resets its focus.
+// summons light + camera only, the rest of loading is handed to 
+// editor start / load screne systems 
 fn setup(
     mut commands: Commands,
 ) {
@@ -107,20 +134,11 @@ fn setup(
 }
 
 // translate f64 math to f32 for rendering 
-fn sync_render_space(
-    camera: Single<&WorldPos, With<Camera>>,
-    mut bodies: Query<(&WorldPos, &mut Transform)>,
-) {
+fn sync_render_space( camera: Single<&WorldPos, With<Camera>>, mut bodies: Query<(&WorldPos, &mut Transform)>, ) {
     let origin = **camera;                              // the camera's f64 position
     for (pos, mut transform) in &mut bodies {
         transform.translation = pos.to_render_space(origin); // subtract in f64, then cast
     }
-}
-
-// helper 
-fn mu_for_period(a: f64, period: f64) -> f64 {
-    let n = std::f64::consts::TAU / period;
-    n * n * a.powi(3)
 }
 
 // for testing 
@@ -214,18 +232,7 @@ fn intercept_transfer(
     });
 }
 
-// double-click in the debug entity list routes here: snap focus + a framing zoom
-// UNCOMMENT TO HAVE VARIABLE ZOOM
-fn apply_focus_request(
-    mut ui: ResMut<DebugUi>,
-    // bodies: Query<&Body>,
-    mut cam: Single<&mut OrbitCam, With<Camera>>,
-) {
+fn apply_focus_request(mut ui: ResMut<DebugUi>, mut cam: Single<&mut OrbitCam, With<Camera>>,) {
     let Some(e) = ui.focus_request.take() else { return; };  // consume once
     cam.focus = e;
-    // cam.distance = bodies.get(e)
-    //     .map(|b| (b.radius * 6.0).max(500.0))  // frame the body by its radius
-    //     .unwrap_or(300.0);                    // ships have no Body → fixed default
 }
-
-

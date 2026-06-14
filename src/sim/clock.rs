@@ -32,11 +32,11 @@ impl SimClock {
     // force warp to the paused level (index 0). Loading a world starts frozen.
     pub fn pause(&mut self) { self.level = 0; }
 
-    fn faster(&mut self) { 
+    pub fn faster(&mut self) {
         self.level = (self.level + 1).min(WARP_LEVELS.len() - 1);
     }
 
-    fn slower(&mut self) {
+    pub fn slower(&mut self) {
         self.level = self.level.saturating_sub(1);
     }
 }

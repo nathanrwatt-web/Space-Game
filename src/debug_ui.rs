@@ -99,6 +99,7 @@ pub struct MissionReadout {
     pub captured_e: f64,
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn debug_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<DebugUi>,

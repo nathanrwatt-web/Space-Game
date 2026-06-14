@@ -56,6 +56,7 @@ pub fn spawn_handles(
 }
 
 // place and show handles on the selcted body 
+#[allow(clippy::type_complexity)]
 pub fn position_handles(
     mode: Res<State<GameState>>,
     debug: Res<DebugUi>,
@@ -107,9 +108,10 @@ pub fn position_handles(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn drag_handle(
     drag: On<Pointer<Drag>>,
-    mode: Res<State<GameState>>,
+    mode: Option<Res<State<GameState>>>, // SubState: absent outside Run, so Option
     egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
     debug: Res<DebugUi>,
@@ -118,6 +120,7 @@ pub fn drag_handle(
     mut orbits: Query<&mut Orbit>,
     cam: Single<(&Camera, &GlobalTransform, &WorldPos, &OrbitCam)>,
 ) {
+    let Some(mode) = mode else { return; };
     if *mode.get() != GameState::Editing { return; }
     if egui_wants.wants_any_pointer_input() { return; }
     if drag.event.button != PointerButton::Primary { return; }

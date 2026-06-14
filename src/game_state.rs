@@ -11,10 +11,20 @@ use bevy::prelude::*;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
+// top-level activity: start menu, a running game, or the level editor
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AppMode {
+    #[default]
+    Menu,
+    Run,
+    Edit,
+}
+
+// phases of a running game; only exist while AppMode::Run (entering Run auto-enters Loading)
+#[derive(SubStates, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[source(AppMode = AppMode::Run)]
 pub enum GameState {
     #[default]
-    MainMenu,
     Loading,
     Running,
     Editing,
@@ -22,9 +32,9 @@ pub enum GameState {
     Saving,
 }
 
-// gameplay systems run only inside a loaded world (not on the start screen / during load)
-pub fn in_game(state: Res<State<GameState>>) -> bool {
-    !matches!(state.get(), GameState::MainMenu | GameState::Loading)
+// true wherever a 3D scene is shown (Run or Edit) — gates rendering off in the menu
+pub fn not_menu(mode: Res<State<AppMode>>) -> bool {
+    *mode.get() != AppMode::Menu
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,19 +51,19 @@ struct SystemFile {
 //  if the body is focusable 
 
 #[derive(Serialize, Deserialize)]
-struct BodyDescription {
-    name: String,
-    parent: Option<String>,            // May be the root
-    orbital_elements: Option<OrbitalElements>,
-    world_pos: Option<WorldPos>,       // May be child with relative position
-    mass: Option<BodyMass>,
-    focusable: bool,
-    appearance: Appearance,
-    maneuvers: Option<Maneuvers>,      // Some ⇒ this is a ship (carries its burn queue)
+pub(crate) struct BodyDescription {
+    pub(crate) name: String,
+    pub(crate) parent: Option<String>,            // May be the root
+    pub(crate) orbital_elements: Option<OrbitalElements>,
+    pub(crate) world_pos: Option<WorldPos>,       // May be child with relative position
+    pub(crate) mass: Option<BodyMass>,
+    pub(crate) focusable: bool,
+    pub(crate) appearance: Appearance,
+    pub(crate) maneuvers: Option<Maneuvers>,      // Some ⇒ this is a ship (carries its burn queue)
 }
 
 impl BodyDescription {
-    fn new(name: String, parent: Option<String>, or_els: Option<[f64; 8]>,
+    pub(crate) fn new(name: String, parent: Option<String>, or_els: Option<[f64; 8]>,
         world_pos: Option<WorldPos>, m: Option<(f64, f64)>, focusable: bool, appearance: Appearance)  -> Self {
             Self {
                 name,
@@ -92,9 +102,9 @@ struct CameraDescription {
 }
 
 #[derive(Serialize, Deserialize)]
-struct BodyMass {
-    mu: f64, 
-    radius: f64
+pub(crate) struct BodyMass {
+    pub(crate) mu: f64,
+    pub(crate) radius: f64,
 }
 
 #[derive(Component, Serialize, Deserialize, Clone)]
@@ -120,14 +130,13 @@ pub fn toggle_mode(
         next.set(match mode.get() {
             GameState::Paused => GameState::Running,                      // close menu / resume
             GameState::Running | GameState::Editing => GameState::Paused, // open menu
-            keep => *keep,                                               // ignore mid load/save
+            keep => *keep,                                                // ignore mid load/save
         });
     }
 }
 
-// OnEnter(MainMenu): tear down the loaded world so we can return to the start screen.
-// Uses plain queries (not Single) so it's a harmless no-op the first time MainMenu is entered,
-// before Startup has spawned the camera.
+// OnExit(AppMode::Run): tear down the loaded world when leaving a game (to menu or editor).
+// Plain queries (not Single) so it's a harmless no-op if there's nothing to clean up.
 pub fn despawn_world(
     mut commands: Commands,
     bodies: Query<Entity, With<Appearance>>,
@@ -145,20 +154,22 @@ pub fn despawn_world(
 }
 
 
-// OnEnter(Loading): load the current world's folder (seeding a default if it's a new world),
-// spawn it, reconfigure the persistent camera, freeze the clock, then enter Running.
+// OnEnter(Loading): load the current worlds folder seeding a default if it's a new world,
+// spawn it, reconfigure the camera, freeze the clock, then enter Running.
+#[allow(clippy::too_many_arguments)]
 pub fn load_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut clock: ResMut<SimClock>,
     mut next: ResMut<NextState<GameState>>,
+    mut app_next: ResMut<NextState<AppMode>>,
     current: Res<CurrentWorld>,
     camera: Single<(&mut OrbitCam, &mut WorldPos)>,
 ) {
     let Some(name) = current.0.as_deref() else {
         error!("load_scene: no current world set; returning to menu");
-        next.set(GameState::MainMenu);
+        app_next.set(AppMode::Menu);
         return;
     };
 
@@ -177,7 +188,7 @@ pub fn load_scene(
         }
     };
 
-    let by_name = spawn_system(&file, &mut commands, &mut meshes, &mut materials);
+    let by_name = spawn_system(&file.bodies, &mut commands, &mut meshes, &mut materials);
     clock.t = file.sim_time;
     clock.pause(); // worlds always load frozen (warp 0)
 
@@ -197,9 +208,10 @@ pub fn load_scene(
     next.set(GameState::Running);
 }
 
-// calls commands.spawn to populated 
-fn spawn_system(
-    file: &SystemFile,
+// returns hashmap of name of entity -> entity id on Loading
+// handles the commands.spawn initialization 
+pub(crate) fn spawn_system(
+    bodies: &[BodyDescription],
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -207,8 +219,8 @@ fn spawn_system(
     let mut by_name: HashMap<String, Entity> = HashMap::new();
 
     // pass 1 — everything that doesn't depend on the parent
-    // since enitty doesn't persist, names must be loaded before orbits are 
-    for body in &file.bodies {
+    // since enitty doesn't persist, names must be loaded before orbits are
+    for body in bodies {
         let (mesh, material) = match &body.appearance {
             Appearance::Sphere { radius, color } => (
                 meshes.add(Sphere::new(*radius)),
@@ -240,8 +252,8 @@ fn spawn_system(
         by_name.insert(body.name.clone(), ec.id()); // string -> entity
     }
 
-    // pass 2 — attach orbits 
-    for body in &file.bodies {
+    // pass 2 — attach orbits
+    for body in bodies {
         let Some(elements) = body.orbital_elements else { continue }; // roots have no orbit
         let Some(parent_name) = &body.parent else { continue };
         let Some(&parent) = by_name.get(parent_name) else {
@@ -254,6 +266,7 @@ fn spawn_system(
 }
 
 // OnEnter(Saving): serialize the live world to RON, then return to the pause menu.
+#[allow(clippy::type_complexity)]
 pub fn save_scene(
     clock: Res<SimClock>,
     current: Res<CurrentWorld>,

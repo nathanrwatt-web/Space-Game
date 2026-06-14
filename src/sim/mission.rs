@@ -82,9 +82,8 @@ pub fn plan_mission(
     Some(MissionPlan { departure, t_peri, circular, v_inf, dep_dv, capture_cost })
 }
 
-// Departure burn whose transfer, via a B-plane offset, makes the planet-relative
-// approach hyperbola's periapsis ~ r_p (instead of aiming at the body center).
-// `ship` and `target` must share a parent (same frame & mu).
+// Departure burn whose transfer via a B-plane offset makes the planet-relative
+// approach hyperbola's periapsis ~ r_p, instead of the center of the planet 
 pub fn bplane_target(
     ship: &OrbitalElements,
     target: &OrbitalElements,
@@ -194,6 +193,7 @@ fn path_is_clear(
 }
 
 // Departure time with minimum estimated total Δv over one synodic period.
+#[allow(clippy::too_many_arguments)]
 fn find_window(
     ship: &OrbitalElements,
     target: &OrbitalElements,

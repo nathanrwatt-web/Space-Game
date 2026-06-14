@@ -3,7 +3,7 @@
 // For now completely AI generated, needs to be reviewed in depth
 
 use bevy::prelude::*;
-use bevy::log::{tracing_subscriber, BoxedLayer, Level};
+use bevy::log::{BoxedLayer, Level};
 use bevy::log::tracing::{Event, Subscriber};
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing_subscriber::Layer;
@@ -34,7 +34,7 @@ impl Visit for MsgVisitor {
         }
     }
 }
-
+#[allow(clippy::collapsible_if)] // only part of the if is collapsable, looks better like this 
 impl<S: Subscriber> Layer<S> for CaptureLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let mut vis = MsgVisitor(None);

@@ -12,13 +12,13 @@ mod menu;
 mod editor;
 
 use camera::{OrbitCam, orbit_camera, focus_on_click};
-use edit::{spawn_handles, position_handles, drag_handle};
+use edit::{spawn_handles, position_handles, drag_handle, run_handle_target, HandleTarget};
 use log_capture::{capture_layer, LogWindow, toggle_log_window, log_panel};
 use sim::orbit::{Orbit, Maneuvers, Burn, Body, propagate_orbits, draw_orbits, execute_maneuvers};
 use sim::{
     soi::{draw_soi, update_soi, soi_radius},
     clock::{SimClock, warp_keys, advance_clock},
-    mission::plan_mission,
+    mission::{plan_mission, plan_escape},
     capture::{ScheduledCapture, execute_capture},
 };
 use world_pos::WorldPos;
@@ -30,8 +30,10 @@ use game_state::{AppMode, GameState, not_menu, load_scene, save_scene, toggle_mo
 use menu::{start_screen, pause_menu};
 use worlds::CurrentWorld;
 use editor::{
-    CurrentLevel, EditorCamera, EditorSaveRequest,
-    editor_setup, editor_teardown, editor_time, save_level, fly_camera, editor_panel,
+    CurrentLevel, EditorCamera, EditorSaveRequest, EditorSelection, EditorFocus,
+    EditorWindows, EditorSpawnForm,
+    editor_setup, editor_teardown, editor_time, save_level, fly_camera, editor_ui,
+    editor_handle_target, draw_reference_axes, apply_editor_focus,
 };
 
 
@@ -51,10 +53,16 @@ fn main() {
        // resources for current file being used 
        .init_resource::<CurrentWorld>()
        .init_resource::<CurrentLevel>()
-       // non azimuthal camera: free from 
+       // non azimuthal camera: free from
        .init_resource::<EditorCamera>()
        .init_resource::<EditorSaveRequest>()
-       // while running states 
+       // editor ui state + the shared orbit-gizmo target
+       .init_resource::<EditorSelection>()
+       .init_resource::<EditorFocus>()
+       .init_resource::<EditorWindows>()
+       .init_resource::<EditorSpawnForm>()
+       .init_resource::<HandleTarget>()
+       // while running states
        .init_state::<AppMode>()
        // Menu / Running / Editting 
        .add_sub_state::<GameState>()
@@ -74,11 +82,22 @@ fn main() {
                execute_maneuvers,                                     // regular burns
                update_soi,                                            // update spheres of influence
                execute_capture,                                       // capture bodies in soi
-               propagate_orbits,                                      // update orbit positions
                orbit_camera,                                          // update camera
             ).chain().run_if(in_state(AppMode::Run)))
-       // editor: free camera + time stepping + save (Edit only)
-       .add_systems(Update, (fly_camera, editor_time, save_level).run_if(in_state(AppMode::Edit)))
+       // positions come from elements + clock; needed in Run AND Edit (editor bodies move too)
+       .add_systems(Update, propagate_orbits
+            .after(execute_capture)
+            .before(orbit_camera)
+            .run_if(not_menu))
+       // editor: free camera + time stepping + save + axes/focus/handle-target (Edit only)
+       .add_systems(Update, (
+               fly_camera, editor_time, save_level,
+               editor_handle_target, draw_reference_axes, apply_editor_focus,
+            ).run_if(in_state(AppMode::Edit)))
+       // Run path: drive the orbit-gizmo target from the debug selection
+       .add_systems(Update, run_handle_target.run_if(in_state(AppMode::Run)))
+       // orbit-edit handles: both modes (self-gated via HandleTarget), after either camera updates
+       .add_systems(Update, position_handles.after(orbit_camera).after(fly_camera))
        // draw orbits and soi helper gizmos (Run or Edit, when debug is open)
        .add_systems(Update, (draw_orbits, draw_soi).chain().after(orbit_camera).run_if(debug_is_open).run_if(not_menu))
        .add_systems(Update, apply_focus_request.before(orbit_camera).run_if(in_state(AppMode::Run)))
@@ -93,14 +112,13 @@ fn main() {
                toggle_debug_ui,
                toggle_log_window,
                toggle_mode.run_if(in_state(AppMode::Run)),
-               position_handles.after(orbit_camera).run_if(in_state(AppMode::Run)),
             ))
        .add_systems(EguiPrimaryContextPass, (
                debug_panel.run_if(in_state(AppMode::Run)),
                log_panel,
                start_screen.run_if(in_state(AppMode::Menu)),
                pause_menu.run_if(in_state(GameState::Paused)),
-               editor_panel.run_if(in_state(AppMode::Edit)),
+               editor_ui.run_if(in_state(AppMode::Edit)),
             ))
        .run();
 }
@@ -177,8 +195,6 @@ fn intercept_transfer(
         return;
     };
 
-    // TODO, the ship needs to be able to travel back to the root
-
     // make sure the selected ship is indeed a ship
     let Ok((ship_orbit, _)) = ships.get(ship_e) else { 
         info!("intercept: focused entity {ship_e:?} is not a ship");
@@ -190,27 +206,53 @@ fn intercept_transfer(
         info!("intercept: clicked {:?} is not a targetable body (root/ship/occluder?)", click.entity);
         return;
     };
-    
-    // check if ship is returning to home body (in reference) or moving in reference frame 
-    if (target_orbit.parent != ship_orbit.parent) && (click.entity != ship_orbit.parent)  { 
-        info!("The parent of the target ({:?}) is not the target of the ship ({:?})",
-            target_orbit.parent, ship_orbit.parent);
-        return; 
-    }
-
+   
+    // copy out so the ship/body query borrows can end before we push burns
+    let ship_parent = ship_orbit.parent;
     let ship_el = ship_orbit.elements;
     let target_el = target_orbit.elements;
     let mu_target = target_body.mu;
-    let r_soi = soi_radius(target_el.a, mu_target, ship_el.mu);
+    // target orbits its parent (the shared frame G) with mu = target_el.mu
+    let r_soi = soi_radius(target_el.a, mu_target, target_el.mu);
     let r_p = debug.capture_rp.unwrap_or((target_body.radius * 1.2).min(0.9 * r_soi));
 
-    let Some(plan) = plan_mission(&ship_el, &target_el, mu_target, clock.t, r_p, &[], 0.0) else {
-        info!("no mission found");
-        return;
+    // Resolve the transfer. Same parent means plan directly. Otherwise, if the target sits in the
+    // ships grandparent frame escape the current parent first
+    let (escape, plan) = if ship_parent == target_orbit.parent {
+        let Some(plan) = plan_mission(&ship_el, &target_el, mu_target, clock.t, r_p, &[], 0.0) else {
+            info!("no mission found");
+            return;
+        };
+        (None, plan)
+    } else {
+        let Ok((p_orbit, p_body, _)) = bodies.get(ship_parent) else {
+            info!("intercept: ship's parent {ship_parent:?} is not an orbiting body");
+            return;
+        };
+        if target_orbit.parent != p_orbit.parent {
+            info!("intercept: target is in neither the ship's parent nor grandparent frame (multi-leg unsupported)");
+            return;
+        }
+        let r_soi_p = soi_radius(p_orbit.elements.a, p_body.mu, p_orbit.elements.mu);
+        let Some((escape, ship_g, t_exit)) = plan_escape(&ship_el, &p_orbit.elements, r_soi_p, clock.t) else {
+            info!("intercept: could not plan an escape from the parent SOI");
+            return;
+        };
+        let Some(plan) = plan_mission(&ship_g, &target_el, mu_target, t_exit, r_p, &[], 0.0) else {
+            info!("intercept: no transfer found after escape");
+            return;
+        };
+        (Some(escape), plan)
     };
 
     let t_dep = plan.departure.execute_at;
-    ships.get_mut(ship_e).unwrap().1.queue.push_back(plan.departure);
+    {
+        let mut man = ships.get_mut(ship_e).unwrap().1;
+        if let Some(escape) = escape {
+            man.queue.push_back(escape); // leave the parent SOI now; update_soi re-parents at the crossing
+        }
+        man.queue.push_back(plan.departure);
+    }
     commands.entity(ship_e).insert(ScheduledCapture {
         execute_at: plan.t_peri,
         parent: click.entity,

@@ -82,8 +82,63 @@ pub fn plan_mission(
     Some(MissionPlan { departure, t_peri, circular, v_inf, dep_dv, capture_cost })
 }
 
+// Burn which escapes a ship currents orbit to ornit around the grandparent 
+pub fn plan_escape(
+    ship: &OrbitalElements,
+    parent: &OrbitalElements,
+    r_soi_p: f64,
+    t_now: f64,
+) -> Option<(Burn, OrbitalElements, f64)> {
+    let mu_p = ship.mu;
+    let (r_vec, v_vec) = ship.state_vectors_at(t_now);
+    let r = r_vec.length();
+    if r >= r_soi_p {
+        return None; // already at / outside the SOI
+    }
+
+    // prograde burn to ~1.1x escape speed, could be optimized to minimize cost 
+    let v_esc = (2.0 * mu_p / r).sqrt();
+    let dv_mag = v_esc * 1.1 - v_vec.length();
+    let dv = if dv_mag > 0.0 { v_vec.normalize() * dv_mag } else { DVec3::ZERO };
+    let escape = ship.with_burn(t_now, dv);
+
+    // coast to the SOI boundary: first t where |r about P| rises through r_soi_p
+    let horizon = 12.0 * (r_soi_p.powi(3) / mu_p).sqrt();
+    let t_exit = soi_exit_time(&escape, r_soi_p, t_now, t_now + horizon)?;
+
+    // ship state about G = (P about G) + (ship about P), both at t_exit
+    let (r_sp, v_sp) = escape.state_vectors_at(t_exit);
+    let (r_pg, v_pg) = parent.state_vectors_at(t_exit);
+    let ship_g = OrbitalElements::from_state(r_sp + r_pg, v_sp + v_pg, parent.mu, t_exit);
+
+    Some((Burn { execute_at: t_now, dv }, ship_g, t_exit))
+}
+
+// first t in [t0,t1] where |offset| rises through r_soi (inside → outside)
+fn soi_exit_time(el: &OrbitalElements, r_soi: f64, t0: f64, t1: f64) -> Option<f64> {
+    let g = |t: f64| el.offset_at(t).length() - r_soi;
+    let n = 512;
+    let mut prev_t = t0;
+    let mut prev = g(prev_t);
+    for k in 1..=n {
+        let t = t0 + (t1 - t0) * k as f64 / n as f64;
+        let cur = g(t);
+        if prev < 0.0 && cur >= 0.0 {
+            let (mut lo, mut hi) = (prev_t, t);
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                if g(mid) < 0.0 { lo = mid; } else { hi = mid; }
+            }
+            return Some(0.5 * (lo + hi));
+        }
+        prev_t = t;
+        prev = cur;
+    }
+    None
+}
+
 // Departure burn whose transfer via a B-plane offset makes the planet-relative
-// approach hyperbola's periapsis ~ r_p, instead of the center of the planet 
+// approach hyperbola's periapsis ~ r_p, instead of the center of the planet
 pub fn bplane_target(
     ship: &OrbitalElements,
     target: &OrbitalElements,
@@ -337,5 +392,27 @@ mod tests {
         assert!( path_is_clear(&transfer, 0.0, tof, &[(sib, 1.0)],     0.0)); // tiny SOI → clear
         assert!(!path_is_clear(&transfer, 0.0, tof, &[(sib, 1.0e12)],  0.0)); // huge SOI → blocked
         assert!(!path_is_clear(&transfer, 0.0, tof, &[],               2.0e9)); // floor above path → blocked
+    }
+
+    #[test]
+    fn escape_leaves_parent_soi_and_binds_to_grandparent() {
+        let mu_g = 1.0e16; // planet (grandparent) GM
+        let mu_p = 1.0e12; // moon (parent) GM
+        let parent = OrbitalElements { a: 1.0e9, e: 0.0, i: 0.0, lan: 0.0, arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: mu_g };
+        let r_soi_p = soi_radius(parent.a, mu_p, mu_g);
+        // ship in a low circular orbit about the moon
+        let ship = OrbitalElements { a: 0.1 * r_soi_p, e: 0.0, i: 0.0, lan: 0.0, arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: mu_p };
+
+        let (burn, ship_g, t_exit) = plan_escape(&ship, &parent, r_soi_p, 0.0).expect("escape planned");
+
+        assert!(burn.dv.length() > 0.0, "escape burn should be nonzero");
+        // the post-burn orbit actually reaches the SOI boundary at t_exit
+        let escape = ship.with_burn(0.0, burn.dv);
+        let r_exit = escape.offset_at(t_exit).length();
+        assert!((r_exit - r_soi_p).abs() / r_soi_p < 1e-3, "exit radius {r_exit} vs soi {r_soi_p}");
+        // about the grandparent the ship is bound and near the moon's orbit
+        assert_eq!(ship_g.mu, mu_g);
+        assert!(ship_g.e < 1.0, "should be bound to G, e = {}", ship_g.e);
+        assert!((ship_g.a - parent.a).abs() / parent.a < 0.5, "a {} not near moon a {}", ship_g.a, parent.a);
     }
 }

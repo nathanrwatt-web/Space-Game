@@ -46,6 +46,7 @@ pub fn fly_camera(
         editor.pitch = editor.pitch.clamp(-lim, lim);
     }
 
+    
     let rot = DQuat::from_rotation_y(editor.yaw) * DQuat::from_rotation_x(editor.pitch);
     let forward = rot * DVec3::NEG_Z;
     let right = rot * DVec3::X;
@@ -56,7 +57,7 @@ pub fn fly_camera(
         editor.speed = (editor.speed * 1.2_f64.powf(notches)).clamp(10.0, 1.0e9);
     }
 
-    // WASD + Q/E move (ignored when egui wants the keyboard, e.g. typing in a field)
+    // WASD + Q/E move, ignored when egui wants the keyboard
     if !egui_wants.wants_any_keyboard_input() {
         let mut dir = DVec3::ZERO;
         if keys.pressed(KeyCode::KeyW) { dir += forward; }

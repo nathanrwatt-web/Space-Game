@@ -2,6 +2,7 @@ use crate::math::orbital_elements::OrbitalElements;
 use crate::world_pos::WorldPos;
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
+use crate::edit::HandleTarget;
 use crate::sim::orbit::{Body, Orbit, Maneuvers};
 use crate::sim::clock::SimClock;
 use crate::worlds::{self, CurrentWorld, WorldMeta};
@@ -142,6 +143,7 @@ pub fn despawn_world(
     bodies: Query<Entity, With<Appearance>>,
     mut cams: Query<&mut OrbitCam>,
     mut current: ResMut<CurrentWorld>,
+    mut target: ResMut<HandleTarget>,
 ) {
     for e in &bodies {
         commands.entity(e).despawn();
@@ -151,6 +153,7 @@ pub fn despawn_world(
         cam.last_focus = Entity::PLACEHOLDER;
     }
     current.0 = None;
+    target.0 = None;
 }
 
 

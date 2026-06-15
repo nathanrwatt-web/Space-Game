@@ -15,9 +15,14 @@ pub enum HandleAxis { Radial, AlongTrack, Normal }
 
 #[derive(Component)]
 pub struct EditHandle {
-    pub axis: HandleAxis, 
-    pub sign: f64, // +-1 for the end of the axis orientation 
+    pub axis: HandleAxis,
+    pub sign: f64, // +-1 for the end of the axis orientation
 }
+
+// the body the orbit gizmos act on. Set each frame by run_handle_target (Run) or the editor
+// (editor_handle_target). None ⇒ handles hidden. Lets one handle implementation serve both modes.
+#[derive(Resource, Default)]
+pub struct HandleTarget(pub Option<Entity>);
 
 // drag sensitivities 
 const K_A: f64      = 0.003; // fractional change
@@ -55,25 +60,22 @@ pub fn spawn_handles(
     }
 }
 
-// place and show handles on the selcted body 
+// place and show the handles on the HandleTarget body (works for orbit cam + fly cam)
 #[allow(clippy::type_complexity)]
 pub fn position_handles(
-    mode: Res<State<GameState>>,
-    debug: Res<DebugUi>,
-    cam: Single<(&OrbitCam, &WorldPos), (With<Camera>, Without<EditHandle>)>, // for disjointess
+    target: Res<HandleTarget>,
+    cam: Single<&WorldPos, (With<Camera>, Without<EditHandle>)>, // disjoint from the handles
     orbits: Query<(&WorldPos, &Orbit)>,
     positions: Query<&WorldPos, Without<EditHandle>>,
     mut handles: Query<(&EditHandle, &mut WorldPos,
         &mut Visibility, &mut Transform), Without<Orbit>>,
     mut gizmos: Gizmos,
 ) {
-    let (orbit_cam, cam_wp) = *cam;
-    let target = debug.selected.unwrap_or(orbit_cam.focus);
+    let cam_pos = cam.0;
 
-    let found = (*mode.get() == GameState::Editing)
-        .then(|| orbits.get(target).ok())
-        .flatten()
-        .and_then(|(body_wp, orbit) | {
+    let found = target.0
+        .and_then(|t| orbits.get(t).ok())
+        .and_then(|(body_wp, orbit)| {
             positions.get(orbit.parent).ok().map(|p| (body_wp, orbit, p))
         });
 
@@ -88,9 +90,10 @@ pub fn position_handles(
     let n_hat = orbit.elements.plane_normal();
     let theta_hat = n_hat.cross(r_hat).normalize_or_zero();
 
-    let l = orbit_cam.distance * 0.08;              // offset, ~constant on screen
-    let scale = (orbit_cam.distance * 0.01) as f32; // sphere size, ~constant on screen
-    let body_render = (body_wp.0 - cam_wp.0).as_vec3();
+    let dist = (body_wp.0 - cam_pos).length();  // distance to whichever camera is active
+    let l = dist * 0.08;                         // offset, ~constant on screen
+    let scale = (dist * 0.01) as f32;            // sphere size, ~constant on screen
+    let body_render = (body_wp.0 - cam_pos).as_vec3();
 
     for (handle, mut wp, mut vis, mut transform) in &mut handles {
         let dir = match handle.axis {
@@ -103,7 +106,7 @@ pub fn position_handles(
         *vis = Visibility::Visible;
         transform.scale = Vec3::splat(scale);
 
-        let tip_render = (wp.0 - cam_wp.0).as_vec3();
+        let tip_render = (wp.0 - cam_pos).as_vec3();
         gizmos.line(body_render, tip_render, axis_color(handle.axis));
     }
 }
@@ -111,26 +114,23 @@ pub fn position_handles(
 #[allow(clippy::too_many_arguments)]
 pub fn drag_handle(
     drag: On<Pointer<Drag>>,
-    mode: Option<Res<State<GameState>>>, // SubState: absent outside Run, so Option
+    target: Res<HandleTarget>,
     egui_wants: Res<EguiWantsInput>,
     clock: Res<SimClock>,
-    debug: Res<DebugUi>,
     handles: Query<&EditHandle>,
     positions: Query<&WorldPos, Without<EditHandle>>,
     mut orbits: Query<&mut Orbit>,
-    cam: Single<(&Camera, &GlobalTransform, &WorldPos, &OrbitCam)>,
+    cam: Single<(&Camera, &GlobalTransform, &WorldPos), With<Camera>>,
 ) {
-    let Some(mode) = mode else { return; };
-    if *mode.get() != GameState::Editing { return; }
+    let Some(target_e) = target.0 else { return; };
     if egui_wants.wants_any_pointer_input() { return; }
     if drag.event.button != PointerButton::Primary { return; }
 
     let Ok(handle) = handles.get(drag.entity) else { return; };
-    let (camera, cam_gt, cam_wp, orbit_cam) = *cam;
-    let target = debug.selected.unwrap_or(orbit_cam.focus);
+    let (camera, cam_gt, cam_wp) = *cam;
 
-    let Ok(mut orbit) = orbits.get_mut(target) else { return; };
-    let Ok(body_wp) = positions.get(target) else { return; };
+    let Ok(mut orbit) = orbits.get_mut(target_e) else { return; };
+    let Ok(body_wp) = positions.get(target_e) else { return; };
     let Ok(parent_wp) = positions.get(orbit.parent) else { return; };
 
     // world-space direction this handle points along
@@ -163,5 +163,19 @@ pub fn drag_handle(
         HandleAxis::Normal => el.i = (el.i + K_I * s).clamp(0.0, PI - 1e-6),
     }
     orbit.elements = el;
+}
+
+// Run path (run_if AppMode::Run): show handles on the debug selection while in Editing.
+pub fn run_handle_target(
+    mode: Res<State<GameState>>,
+    debug: Res<DebugUi>,
+    cam: Single<&OrbitCam, With<Camera>>,
+    mut target: ResMut<HandleTarget>,
+) {
+    target.0 = if *mode.get() == GameState::Editing {
+        Some(debug.selected.unwrap_or(cam.focus))
+    } else {
+        None
+    };
 }
 

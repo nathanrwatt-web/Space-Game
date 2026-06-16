@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::math::DVec3;
+use bevy::math::{DVec3, DQuat};
 use crate::math::{
     orbital_elements::OrbitalElements,
     lambert::lambert,
@@ -11,7 +11,7 @@ use crate::sim::{
     transfer::hohmann_tof,
 };
 
-use std::f64::consts::TAU;
+use std::f64::consts::{TAU, PI};
 
 pub struct MissionPlan {
     pub departure: Burn,
@@ -112,6 +112,72 @@ pub fn plan_escape(
     let ship_g = OrbitalElements::from_state(r_sp + r_pg, v_sp + v_pg, parent.mu, t_exit);
 
     Some((Burn { execute_at: t_now, dv }, ship_g, t_exit))
+}
+
+// Two-impulse transfer from the ship's current orbit into a circular orbit of radius r_p
+// about the central (root) body. A root sits at the origin of its frame with no SOI to
+// capture into, so this replaces plan_mission's rendezvous + hyperbolic capture with a
+// Hohmann-style transfer followed by circularization. Screens candidate departures against
+// the sibling bodies' SOIs and the root's surface, like find_window does.
+pub fn plan_root_capture(
+    ship: &OrbitalElements,              // about the root, ship.mu == mu_root
+    mu_root: f64,
+    r_p: f64,                            // desired circular radius
+    t_now: f64,
+    siblings: &[(OrbitalElements, f64)], // (elements, soi_radius) of other bodies orbiting the root
+    primary_floor: f64,                  // root radius — transfer must stay above the surface
+) -> Option<MissionPlan> {
+    let period = ship.period();
+    // (cost, t_dep, tof, aim, v1, v2) of the cheapest clear corridor found
+    let mut best: Option<(f64, f64, f64, DVec3, DVec3, DVec3)> = None;
+
+    let samples = 360;
+    for k in 0..samples {
+        let t_dep = t_now + period * k as f64 / samples as f64;
+        let (r1, v_ship) = ship.state_vectors_at(t_dep);
+        let r1_mag = r1.length();
+        let a_t = 0.5 * (r1_mag + r_p);            // transfer ellipse semi-major axis
+        let tof = PI * (a_t.powi(3) / mu_root).sqrt(); // half its period
+
+        // aim ~180° away on the destination circle; rotate a hair off anti-radial about the
+        // orbit normal so the Lambert solve isn't collinear (its 180° singularity)
+        let h = r1.cross(v_ship);
+        if h.length() < 1e-12 { continue; }
+        let aim = (DQuat::from_axis_angle(h.normalize(), PI / 180.0) * -r1.normalize()) * r_p;
+
+        let Some((v1, v2)) = lambert(r1, aim, tof, mu_root, true) else { continue; };
+        let transfer = OrbitalElements::from_state(r1, v1, mu_root, t_dep);
+        if !path_is_clear(&transfer, t_dep, tof, siblings, primary_floor) { continue; }
+
+        let dep_dv = (v1 - v_ship).length();
+        let cost = dep_dv + (circularize(aim, v2, mu_root, r_p) - v2).length();
+        if best.is_none_or(|b| cost < b.0) {
+            best = Some((cost, t_dep, tof, aim, v1, v2));
+        }
+    }
+
+    let (_, t_dep, tof, aim, v1, v2) = best?;
+    let dep = v1 - ship.velocity_at(t_dep);
+    let t_arr = t_dep + tof;
+    let v_circ = circularize(aim, v2, mu_root, r_p);
+    let circular = OrbitalElements::from_state(aim, v_circ, mu_root, t_arr);
+    Some(MissionPlan {
+        departure: Burn { execute_at: t_dep, dv: dep },
+        t_peri: t_arr,
+        circular,
+        v_inf: 0.0,                       // not meaningful for a central-body capture
+        dep_dv: dep.length(),
+        capture_cost: (v_circ - v2).length(),
+    })
+}
+
+// Circular velocity at position r: the in-plane direction perpendicular to r (the tangential
+// component of the arrival velocity v), scaled to circular speed. Projecting out the radial part
+// gives a clean e≈0 orbit even when arrival isn't exactly at an apsis.
+fn circularize(r: DVec3, v: DVec3, mu: f64, r_p: f64) -> DVec3 {
+    let r_hat = r.normalize();
+    let tang = v - r_hat * v.dot(r_hat);
+    tang.normalize() * (mu / r_p).sqrt()
 }
 
 // first t in [t0,t1] where |offset| rises through r_soi (inside → outside)
@@ -351,6 +417,21 @@ mod tests {
         assert!(plan.circular.e < 1e-3, "e = {}", plan.circular.e);
         assert!((plan.circular.a - r_p).abs() / r_p < 0.25, "a = {} vs r_p {}", plan.circular.a, r_p);
         assert!(plan.t_peri > 0.0);
+    }
+
+    #[test]
+    fn root_capture_produces_circular_orbit() {
+        let mu_root = 1.0e16;
+        // ship in a circular orbit about the root, want a lower circular orbit
+        let ship = OrbitalElements { a: 1.6e9, e: 0.0, i: 0.0, lan: 0.0, arg_pe: 0.0, m0: 0.7, epoch: 0.0, mu: mu_root };
+        let r_p = 1.0e9;
+
+        let plan = plan_root_capture(&ship, mu_root, r_p, 0.0, &[], 0.0).expect("mission");
+
+        assert!(plan.circular.e < 1e-3, "e = {}", plan.circular.e);
+        assert!((plan.circular.a - r_p).abs() / r_p < 0.05, "a = {} vs r_p {}", plan.circular.a, r_p);
+        assert!(plan.t_peri > 0.0);
+        assert!(plan.dep_dv > 0.0);
     }
 
     #[test]

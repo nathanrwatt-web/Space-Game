@@ -2,19 +2,20 @@
 // code is seperated for future purposes
 
 mod camera;
+mod grid;
 mod ui;
 
-pub use camera::{EditorCamera, fly_camera};
+pub use camera::{EditorCamera, editor_camera};
+pub use grid::{draw_editor_grid, draw_origin_axes, draw_selection_highlight};
 pub use ui::editor_ui;
 
 use bevy::prelude::*;
-use bevy::math::{DVec3, DQuat};
 use bevy_egui::input::EguiWantsInput;
 use serde::{Serialize, Deserialize};
 use std::path::{Path, PathBuf};
 
 use crate::edit::HandleTarget;
-use crate::game_state::{Appearance, BodyDescription, BodyMass, spawn_system};
+use crate::game_state::{AppMode, Appearance, BodyDescription, BodyMass, spawn_system};
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::{Body, Orbit};
 use crate::world_pos::WorldPos;
@@ -156,46 +157,24 @@ pub fn editor_handle_target(selection: Res<EditorSelection>, mut target: ResMut<
     target.0 = selection.0;
 }
 
-// RGB reference axes at the origin and on the selected body (run_if Edit).
-pub fn draw_reference_axes(
-    mut gizmos: Gizmos,
-    cam: Single<&WorldPos, With<Camera>>,
-    selection: Res<EditorSelection>,
-    positions: Query<&WorldPos>,
+// Left-click a body in the 3D viewport → select it (Edit only). Mirrors the Hierarchy
+// selection; `editor_handle_target` then routes the orbital drag-handles to it.
+pub fn editor_pick_select(
+    click: On<Pointer<Click>>,
+    mode: Res<State<AppMode>>,
+    egui_wants: Res<EguiWantsInput>,
+    bodies: Query<(), With<EditorBody>>,
+    mut selection: ResMut<EditorSelection>,
 ) {
-    let cam_pos = cam.0;
-    let mut points = vec![DVec3::ZERO];
-    if let Some(sel) = selection.0
-        && let Ok(wp) = positions.get(sel)
-        && wp.0 != DVec3::ZERO
-    {
-        points.push(wp.0);
+    if *mode.get() != AppMode::Edit || egui_wants.wants_any_pointer_input() {
+        return;
     }
-    for p in points {
-        let len = ((p - cam_pos).length() * 0.15).max(50.0) as f32;
-        let base = (p - cam_pos).as_vec3();
-        gizmos.line(base, base + Vec3::X * len, Color::srgb(0.9, 0.2, 0.2));
-        gizmos.line(base, base + Vec3::Y * len, Color::srgb(0.2, 0.9, 0.2));
-        gizmos.line(base, base + Vec3::Z * len, Color::srgb(0.3, 0.5, 1.0));
+    if click.event.button != PointerButton::Primary {
+        return;
     }
-}
-
-// double-click in the hierarchy → dolly the fly camera to frame the body (run_if Edit).
-pub fn apply_editor_focus(
-    mut focus: ResMut<EditorFocus>,
-    mut editor_cam: ResMut<EditorCamera>,
-    bodies: Query<(&WorldPos, &Appearance)>,
-) {
-    let Some(e) = focus.0.take() else { return; };
-    let Ok((wp, appearance)) = bodies.get(e) else { return; };
-    let radius = match appearance {
-        Appearance::Sphere { radius, .. } => *radius as f64,
-        _ => 50.0,
-    };
-    let dist = (radius * 8.0).max(200.0);
-    let rot = DQuat::from_rotation_y(editor_cam.yaw) * DQuat::from_rotation_x(editor_cam.pitch);
-    let forward = rot * DVec3::NEG_Z;
-    editor_cam.pos = wp.0 - forward * dist; // frames the body ahead, keeps orientation
+    if bodies.get(click.entity).is_ok() {
+        selection.0 = Some(click.entity);
+    }
 }
 
 // editor time: continuous at the current rate + [ / ] single steps (analytic, so exact).

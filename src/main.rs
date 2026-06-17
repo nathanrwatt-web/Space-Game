@@ -33,8 +33,9 @@ use worlds::CurrentWorld;
 use editor::{
     CurrentLevel, EditorCamera, EditorSaveRequest, EditorSelection, EditorFocus,
     EditorWindows, EditorSpawnForm,
-    editor_setup, editor_teardown, editor_time, save_level, fly_camera, editor_ui,
-    editor_handle_target, draw_reference_axes, apply_editor_focus,
+    editor_setup, editor_teardown, editor_time, save_level, editor_camera, editor_ui,
+    editor_handle_target, editor_pick_select,
+    draw_editor_grid, draw_origin_axes, draw_selection_highlight,
 };
 
 
@@ -74,7 +75,7 @@ fn main() {
        // edit (level editor) lifecycle
        .add_systems(OnEnter(AppMode::Edit), editor_setup)
        .add_systems(OnExit(AppMode::Edit), editor_teardown)
-       .add_systems(Startup, (setup, spawn_handles))
+       .add_systems(Startup, (setup, spawn_handles, configure_gizmos))
        // gameplay: runs only inside a loaded world
        .add_systems(Update, (
                warp_keys,                                             // time change settings
@@ -90,15 +91,18 @@ fn main() {
             .after(execute_capture)
             .before(orbit_camera)
             .run_if(not_menu))
-       // editor: free camera + time stepping + save + axes/focus/handle-target (Edit only)
+       // editor: orbit camera + time stepping + save + handle-target (Edit only)
        .add_systems(Update, (
-               fly_camera, editor_time, save_level,
-               editor_handle_target, draw_reference_axes, apply_editor_focus,
+               editor_camera, editor_time, save_level, editor_handle_target,
             ).run_if(in_state(AppMode::Edit)))
+       // editor reference gizmos: adaptive grid + infinite axes + selection highlight, after the camera moves
+       .add_systems(Update, (
+               draw_editor_grid, draw_origin_axes, draw_selection_highlight,
+            ).after(editor_camera).run_if(in_state(AppMode::Edit)))
        // Run path: drive the orbit-gizmo target from the debug selection
        .add_systems(Update, run_handle_target.run_if(in_state(AppMode::Run)))
        // orbit-edit handles: both modes (self-gated via HandleTarget), after either camera updates
-       .add_systems(Update, position_handles.after(orbit_camera).after(fly_camera))
+       .add_systems(Update, position_handles.after(orbit_camera).after(editor_camera))
        // draw orbits and soi helper gizmos (Run or Edit, when debug is open)
        .add_systems(Update, (draw_orbits, draw_soi).chain().after(orbit_camera).run_if(debug_is_open).run_if(not_menu))
        .add_systems(Update, apply_focus_request.before(orbit_camera).run_if(in_state(AppMode::Run)))
@@ -108,6 +112,7 @@ fn main() {
        .add_observer(focus_on_click)
        .add_observer(intercept_transfer)
        .add_observer(drag_handle)
+       .add_observer(editor_pick_select)
        // input + GUI systems
        .add_systems(Update, (
                toggle_debug_ui,
@@ -152,7 +157,13 @@ fn setup(
     ));
 }
 
-// translate f64 math to f32 for rendering 
+// crisper gizmo lines across the whole app (orbits, SOI, editor grid/axes/handles)
+fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
+    config.line.width = 2.0;
+}
+
+// translate f64 math to f32 for rendering
 fn sync_render_space( camera: Single<&WorldPos, With<Camera>>, mut bodies: Query<(&WorldPos, &mut Transform)>, ) {
     let origin = **camera;                              // the camera's f64 position
     for (pos, mut transform) in &mut bodies {

@@ -15,6 +15,13 @@ pub struct StateVec {
     pub frame: Entity,  // frame of reference body 
 }
 
+impl StateVec {
+    pub fn from_orbit(orbit: &crate::sim::orbit::Orbit, t: f64) -> Self {
+        let (pos, vel) = orbit.elements.state_vectors_at(t);
+        Self { pos, vel, frame: orbit.parent }
+    }
+}
+
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Propulsion {
     pub max_accel: f64,  
@@ -210,6 +217,35 @@ mod tests {
         }
         let drift = (energy(pos, vel) - e0).abs() / e0.abs();
         assert!(drift < 1e-4, "energy drifted {drift:.2e}");
+    }
+
+    #[test]
+    fn coast_powered_coast_round_trip() {
+        // eccentric, inclined orbit (unambiguous e > 0)
+        let r0 = DVec3::new(1.0e7, 0.0, 0.0);
+        let vc = (MU / 1.0e7).sqrt();
+        let v0 = DVec3::new(0.0, vc * 0.9, vc * 0.2);
+        let el0 = OrbitalElements::from_state(r0, v0, MU, 0.0);
+
+        // Orbit -> StateVec at t0, integrate forward with zero thrust to t1
+        let (mut pos, mut vel) = el0.state_vectors_at(0.0);
+        let sources = one_source(MU);
+        let (dt, n) = (0.25, 2000);
+        for _ in 0..n {
+            verlet_step(&mut pos, &mut vel, &sources, DVec3::ZERO, dt);
+        }
+        let t1 = n as f64 * dt;
+
+        // StateVec -> Orbit at t1; the rebuilt conic must agree with the original later
+        let el1 = OrbitalElements::from_state(pos, vel, MU, t1);
+        let t2 = t1 + 5000.0;
+        let p_ref = el0.state_vectors_at(t2).0;
+        let p_new = el1.state_vectors_at(t2).0;
+        assert!(
+            (p_ref - p_new).length() / r0.length() < 1e-3,
+            "round-trip drift {:.2e}",
+            (p_ref - p_new).length() / r0.length()
+        );
     }
 }
 

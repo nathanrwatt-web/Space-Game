@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::sim::clock::SimClock;
 use crate::world_pos::WorldPos;
 use crate::math::orbital_elements::OrbitalElements;
+use crate::sim::integrate::StateVec;
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
 
@@ -13,7 +14,15 @@ pub struct Orbit {
     pub(crate) elements: OrbitalElements, // math of the specific orbit 
     pub(crate) parent: Entity, // id of what it orbits 
 }
-// note: we keep track of the paretn ourself since the bevy ChildOf works in f32
+
+impl Orbit {
+    pub fn from_statevec(sv: &StateVec, mu: f64, t: f64) -> Self {
+        Self {
+            elements: OrbitalElements::from_state(sv.pos, sv.vel, mu, t),
+            parent: sv.frame,
+        }
+    }
+}
 
 #[derive(Component, Default, Clone, Serialize, Deserialize)]
 pub struct Burn {
@@ -32,16 +41,18 @@ pub struct Body {
     pub radius: f64,
 }
 
+#[allow(clippy::complexity)]
 pub fn propagate_orbits(
     clock: Res<SimClock>,
     orbiters: Query<(Entity, &Orbit)>, // every orbiting object
-    roots: Query<(Entity, &WorldPos), Without<Orbit>>, // bodies which don't orbit the star
-    mut writeback: Query<(Entity, &mut WorldPos), With<Orbit>>,
+    powered: Query<(Entity, &StateVec)>,
+    roots: Query<(Entity, &WorldPos), (Without<Orbit>, Without<StateVec>)>,
+    mut writeback: Query<(Entity, &mut WorldPos), Or<(With<Orbit>, With<StateVec>)>>,
 ) {
     let t = clock.t;
     
     // offsets of each item to be used later 
-    let locals: HashMap<Entity, (DVec3, DVec3, Entity)> = orbiters
+    let mut locals: HashMap<Entity, (DVec3, DVec3, Entity)> = orbiters
         .iter()
         // map each element to new (position, velocity, parent)
         .map(|(e, o)| {
@@ -49,6 +60,11 @@ pub fn propagate_orbits(
             (e, (pos, vel , o.parent))
         })
         .collect();
+
+    // calculate orbits for powered ship 
+    for (e, sv) in &powered {
+        locals.insert(e, (sv.pos, sv.vel, sv.frame));
+    }
 
     // position of each entity wihthout orbit
     let root_pos: HashMap<Entity, DVec3> = roots

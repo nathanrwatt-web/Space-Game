@@ -20,6 +20,7 @@ use sim::{
     clock::{SimClock, warp_keys, advance_clock},
     mission::{plan_mission, plan_escape, plan_root_capture},
     capture::{ScheduledCapture, execute_capture},
+    integrate::{PhysAccumulator, integrate_powered},
 };
 use math::orbital_elements::OrbitalElements;
 use world_pos::WorldPos;
@@ -64,6 +65,8 @@ fn main() {
        .init_resource::<EditorWindows>()
        .init_resource::<EditorSpawnForm>()
        .init_resource::<HandleTarget>()
+       // for numerical integation (Any where N-body or constant thrust)
+       .init_resource::<PhysAccumulator>()
        // while running states
        .init_state::<AppMode>()
        // Menu / Running / Editting 
@@ -91,6 +94,11 @@ fn main() {
             .after(execute_capture)
             .before(orbit_camera)
             .run_if(not_menu))
+       // numerical integration for thrust 
+       .add_systems(Update, integrate_powered
+           .after(execute_capture) // run for ships after enter orbit 
+           .before(propagate_orbits) // before orbits are calculated 
+           .run_if(in_state(AppMode::Run))) // only while the app is running 
        // editor: orbit camera + time stepping + save + handle-target (Edit only)
        .add_systems(Update, (
                editor_camera, editor_time, save_level, editor_handle_target,
@@ -128,7 +136,7 @@ fn main() {
             ))
        .run();
 }
-
+ 
 // summons light + camera only, the rest of loading is handed to 
 // editor start / load screne systems 
 fn setup(

@@ -121,10 +121,42 @@ impl OrbitalElements {
             (0.0, e_vec.y.atan2(e_vec.x).rem_euclid(TAU))
         };
 
-        // true anomaly v -> eccentric anomaly E -> mean anomaly M 
-        let mut nu = (e_vec.dot(r) / (e * r_mag)).clamp(-1.0, 1.0).acos();
+        // circular orbits have e ≈ 0 ⇒ e_vec direction is meaningless and dividing by it
+        // yields NAN
+        const CIRC_EPS: f64 = 1e-11;
 
-        if r.dot(v) < 0.0 { nu = TAU - nu; }
+        let (lan, arg_pe) = if node_mag > 1e-9 {
+            let mut lan = (node.x / node_mag).clamp(-1.0, 1.0).acos();
+            if node.y < 0.0 { lan = TAU - lan; } // - => change angle 
+            let arg_pe = if e > CIRC_EPS {
+                let mut w = (node.dot(e_vec) / (node_mag * e)).clamp(-1.0, 1.0).acos();
+                if e_vec.z < 0.0 { w = TAU - w; }
+                w
+            } else {
+                0.0 // circular: no periapsis, fold the whole angle into m0 below
+            };
+            (lan, arg_pe)
+        } else if e > CIRC_EPS {
+            // equatorial (i ≈ 0): node vanishes. Pin Ω = 0 and fold the whole angle
+            // into ω = longitude of periapsis. (prograde assumed: h.z > 0)
+            (0.0, e_vec.y.atan2(e_vec.x).rem_euclid(TAU))
+        } else {
+            (0.0, 0.0) // circular + equatorial
+        };
+
+        // true anomaly ν -> eccentric anomaly E -> mean anomaly M.
+        // With no periapsis ν is the argument of latitude
+        let nu = if e > CIRC_EPS {
+            let mut nu = (e_vec.dot(r) / (e * r_mag)).clamp(-1.0, 1.0).acos();
+            if r.dot(v) < 0.0 { nu = TAU - nu; }
+            nu
+        } else if node_mag > 1e-9 {
+            let mut u = (node.dot(r) / (node_mag * r_mag)).clamp(-1.0, 1.0).acos();
+            if r.z < 0.0 { u = TAU - u; }
+            u
+        } else {
+            r.y.atan2(r.x).rem_euclid(TAU)
+        };
         
         let m0 = if e < 1.0 {
             let ea = 2.0 * ((1.0 - e).sqrt() * (nu * 0.5).sin())

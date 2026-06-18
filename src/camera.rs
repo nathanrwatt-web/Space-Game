@@ -69,7 +69,7 @@ pub fn orbit_camera(
     let target = bodies.get(orbit.focus).map(|w| w.0).unwrap_or(orbit.focus_point);
 
     // if still focusing on the same planet: 
-        if orbit.focus == orbit.last_focus {
+    if orbit.focus == orbit.last_focus {
         let last = orbit.last_focus_pos;        // copy out: can't hold two field-borrows through Mut<>
         orbit.focus_point += target - last;     // displacement since last frame (minus!)
     }

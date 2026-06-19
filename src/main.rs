@@ -21,6 +21,7 @@ use sim::{
     mission::{plan_mission, plan_escape, plan_root_capture},
     capture::{ScheduledCapture, execute_capture},
     integrate::{PhysAccumulator, integrate_powered},
+    guidance::{Guidance, apply_guidance, debug_guidance_keys, debug_toggle_powered},
 };
 use math::orbital_elements::OrbitalElements;
 use world_pos::WorldPos;
@@ -89,16 +90,23 @@ fn main() {
                execute_capture,                                       // capture bodies in soi
                orbit_camera,                                          // update camera
             ).chain().run_if(in_state(AppMode::Run)))
-       // positions come from elements + clock; needed in Run AND Edit (editor bodies move too)
+       // debug for ship movement 
+       .add_systems(Update, (debug_toggle_powered, debug_guidance_keys).run_if(in_state(AppMode::Run)))
+       // update orbital paths 
        .add_systems(Update, propagate_orbits
-            .after(execute_capture)
-            .before(orbit_camera)
+            .after(execute_capture) // captures happen first 
+            .before(orbit_camera) // math before camera update 
             .run_if(not_menu))
        // numerical integration for thrust 
        .add_systems(Update, integrate_powered
            .after(execute_capture) // run for ships after enter orbit 
            .before(propagate_orbits) // before orbits are calculated 
-           .run_if(in_state(AppMode::Run))) // only while the app is running 
+           .run_if(in_state(AppMode::Run)))
+        // generate thrust command for numerical inegration 
+        .add_systems(Update, apply_guidance
+            .after(execute_capture) // after ship updates orbit 
+            .before(integrate_powered) // before numerical integration 
+            .run_if(in_state(AppMode::Run)))
        // editor: orbit camera + time stepping + save + handle-target (Edit only)
        .add_systems(Update, (
                editor_camera, editor_time, save_level, editor_handle_target,

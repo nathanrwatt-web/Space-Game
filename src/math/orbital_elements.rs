@@ -107,18 +107,13 @@ impl OrbitalElements {
 
         let energy = v.length_squared() / 2.0 - mu / r_mag;
         let a = -mu / (2.0 * energy);
-        let i = (h.z / h_mag).clamp(-1.0, 1.0).acos();
-        let (lan, arg_pe) = if node_mag > 1e-9 {
-            let mut lan = (node.x / node_mag).clamp(-1.0, 1.0).acos();
-            if node.y < 0.0 {
-                lan = TAU - lan;
-            }
-            let mut arg_pe = (node.dot(e_vec) / (node_mag * e)).clamp(-1.0, 1.0).acos();
-            if e_vec.z < 0.0 { arg_pe = TAU - arg_pe; } (lan, arg_pe)
+        // radial / zero-angular-momentum states (e.g. a ship parked at ~zero velocity)
+        // give h_mag ≈ 0; guard the divide so inclination can't become NaN and poison
+        // the whole render (a NaN WorldPos under the camera blanks the scene).
+        let i = if h_mag > 1e-12 {
+            (h.z / h_mag).clamp(-1.0, 1.0).acos()
         } else {
-            // equatorial (i ≈ 0): node vanishes. Pin Ω = 0 and fold the whole angle
-            // into ω = longitude of periapsis. (prograde assumed: h.z > 0)
-            (0.0, e_vec.y.atan2(e_vec.x).rem_euclid(TAU))
+            0.0
         };
 
         // circular orbits have e ≈ 0 ⇒ e_vec direction is meaningless and dividing by it
@@ -536,6 +531,21 @@ mod tests {
         let el2 = OrbitalElements::from_state(r, v, el.mu, t);
         let t2 = t + 2.0e6;
         assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0);
+    }
+
+    #[test]
+    fn from_state_radial_state_is_finite() {
+        // zero velocity ⇒ angular momentum h ≈ 0; the orbital ELEMENTS must stay finite
+        // (no NaN inclination), otherwise a stray NaN blanks the whole render through the
+        // camera. Such a radial/parabolic state isn't meant to be flown — the
+        // powered→coast "park" circularizes instead (see Orbit::park_from_statevec).
+        let r = DVec3::new(1.0e7, 2.0e6, -3.0e6);
+        let el = OrbitalElements::from_state(r, DVec3::ZERO, MU_SUN, 0.0);
+        assert!(
+            el.a.is_finite() && el.e.is_finite() && el.i.is_finite()
+                && el.lan.is_finite() && el.arg_pe.is_finite() && el.m0.is_finite(),
+            "radial state produced non-finite elements: {el:?}"
+        );
     }
 
     #[test]

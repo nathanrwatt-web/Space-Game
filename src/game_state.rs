@@ -4,6 +4,7 @@ use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
 use crate::edit::HandleTarget;
 use crate::sim::orbit::{Body, Orbit, Maneuvers};
+use crate::sim::integrate::Propulsion;
 use crate::sim::clock::SimClock;
 use crate::worlds::{self, CurrentWorld, WorldMeta};
 
@@ -12,7 +13,7 @@ use bevy::prelude::*;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
-// top-level activity: start menu, a running game, or the level editor
+// main menu, game running, edit mode
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppMode {
     #[default]
@@ -21,7 +22,7 @@ pub enum AppMode {
     Edit,
 }
 
-// phases of a running game; only exist while AppMode::Run (entering Run auto-enters Loading)
+// AppMode::Run sub branches 
 #[derive(SubStates, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[source(AppMode = AppMode::Run)]
 pub enum GameState {
@@ -33,7 +34,6 @@ pub enum GameState {
     Saving,
 }
 
-// true wherever a 3D scene is shown (Run or Edit) — gates rendering off in the menu
 pub fn not_menu(mode: Res<State<AppMode>>) -> bool {
     *mode.get() != AppMode::Menu
 }
@@ -61,9 +61,12 @@ pub(crate) struct BodyDescription {
     pub(crate) focusable: bool,
     pub(crate) appearance: Appearance,
     pub(crate) maneuvers: Option<Maneuvers>,      // Some ⇒ this is a ship (carries its burn queue)
+    #[serde(default)]
+    pub(crate) propulsion: Option<Propulsion>,    // Some ⇒ ship has engine 
 }
 
 impl BodyDescription {
+    // helper for making new BodyDescriptions 
     pub(crate) fn new(name: String, parent: Option<String>, or_els: Option<[f64; 8]>,
         world_pos: Option<WorldPos>, m: Option<(f64, f64)>, focusable: bool, appearance: Appearance)  -> Self {
             Self {
@@ -83,7 +86,8 @@ impl BodyDescription {
                 },
                 focusable,
                 appearance,
-                maneuvers: None, // ships are built as struct literals with Some(..)
+                maneuvers: None,  // ships are built as struct literals with Some(..)
+                propulsion: None, // ditto — only ships carry propulsion
             }
     }
 }
@@ -121,7 +125,7 @@ pub fn toggle_mode(
     mut next: ResMut<NextState<GameState>>,
 ) {
     if keys.just_pressed(KeyCode::Tab) {
-        next.set(match mode.get() {     // Resources are singular mode.get returns GameState::
+        next.set(match mode.get() {
             GameState::Running => GameState::Editing,
             GameState::Editing => GameState::Running,
             keep => *keep,
@@ -137,7 +141,6 @@ pub fn toggle_mode(
 }
 
 // OnExit(AppMode::Run): tear down the loaded world when leaving a game (to menu or editor).
-// Plain queries (not Single) so it's a harmless no-op if there's nothing to clean up.
 pub fn despawn_world(
     mut commands: Commands,
     bodies: Query<Entity, With<Appearance>>,
@@ -180,7 +183,7 @@ pub fn load_scene(
     let file: SystemFile = match worlds::read_ron::<SystemFile>(&path) {
         Ok(f) => f,
         Err(e) => {
-            // new world (or unreadable) → seed from the default scene and persist it
+            // new world, seed from default 
             info!("load '{name}': {e}; seeding default");
             let file = default_system();
             if let Err(e) = worlds::write_ron(&path, &file) {
@@ -250,9 +253,10 @@ pub(crate) fn spawn_system(
             ec.insert(Body { mu: m.mu, radius: m.radius });
         }
         if let Some(man) = &body.maneuvers {
-            ec.insert(man.clone()); // Some ⇒ ship
+            ec.insert(man.clone());                         // Some => ship 
+            ec.insert(body.propulsion.unwrap_or_default()); // engines capability 
         }
-        by_name.insert(body.name.clone(), ec.id()); // string -> entity
+        by_name.insert(body.name.clone(), ec.id()); // string -> entity id 
     }
 
     // pass 2 — attach orbits
@@ -280,6 +284,7 @@ pub fn save_scene(
         Option<&Orbit>,
         Option<&Body>,
         Option<&Maneuvers>,
+        Option<&Propulsion>,
         Has<Focusable>,
     )>,
     names: Query<&Name>,                       // second lookup: parent Entity -> name
@@ -293,7 +298,7 @@ pub fn save_scene(
     };
 
     let mut descs = Vec::new();
-    for (name, appearance, world_pos, orbit, body, maneuvers, focusable) in &bodies {
+    for (name, appearance, world_pos, orbit, body, maneuvers, propulsion, focusable) in &bodies {
         descs.push(BodyDescription {
             name: name.as_str().to_string(),
             // resolve the parent Entity back to its name (None for roots)
@@ -305,6 +310,7 @@ pub fn save_scene(
             focusable,
             appearance: appearance.clone(),
             maneuvers: maneuvers.cloned(),
+            propulsion: propulsion.copied(),
         });
     }
 
@@ -334,61 +340,64 @@ pub fn save_scene(
 
 // default setup 
 fn default_system() -> SystemFile {
-    let jupiter_mu = 126.687;
+    // Scaled-up Jupiter system
+    let jupiter_mu = 126_687.0; // 126.687 × 1000
     SystemFile {
         sim_time: 0.0,
         camera: Some(CameraDescription {
             focus_entity: "Jupiter".into(),
             orientation: DQuat::from_rotation_x(-0.6),
-            distance: 25000.0,
-            world_pos: Some(WorldPos::new(0.0, 10000.0, 25000.0)),
+            distance: 250_000.0,
+            world_pos: Some(WorldPos::new(0.0, 100_000.0, 250_000.0)),
         }),
         bodies: vec![
             // root: no parent, no orbit, pinned at the origin
             BodyDescription::new(
                 "Jupiter".into(), None, None,
-                Some(WorldPos::ORIGIN), Some((jupiter_mu, 699.0)), true,
-                Appearance::Sphere { radius: 699.0, color: [0.80, 0.60, 0.40] },
+                Some(WorldPos::ORIGIN), Some((jupiter_mu, 6990.0)), true,
+                Appearance::Sphere { radius: 6990.0, color: [0.80, 0.60, 0.40] },
             ),
             BodyDescription::new(
                 "Io".into(), Some("Jupiter".into()),
-                Some([4218.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, jupiter_mu]),
-                None, Some((5.96e-3 * 2.0, 36.4)), true,
-                Appearance::Sphere { radius: 36.4, color: [0.90, 0.85, 0.40] },
+                Some([42180.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, jupiter_mu]),
+                None, Some((5.96 * 2.0, 364.0)), true,
+                Appearance::Sphere { radius: 364.0, color: [0.90, 0.85, 0.40] },
             ),
             BodyDescription::new(
                 "Europa".into(), Some("Jupiter".into()),
-                Some([6711.0, 0.0, 0.0, 0.0, 0.0, 2.5, 0.0, jupiter_mu]),
-                None, Some((3.20e-3 * 2.0, 31.2)), true,
-                Appearance::Sphere { radius: 31.2, color: [0.85, 0.85, 0.90] },
+                Some([67110.0, 0.0, 0.0, 0.0, 0.0, 2.5, 0.0, jupiter_mu]),
+                None, Some((3.20 * 2.0, 312.0)), true,
+                Appearance::Sphere { radius: 312.0, color: [0.85, 0.85, 0.90] },
             ),
             BodyDescription::new(
                 "Ganymede".into(), Some("Jupiter".into()),
-                Some([10704.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, jupiter_mu]),
-                None, Some((9.89e-3 * 2.0, 52.6)), true,
-                Appearance::Sphere { radius: 52.6, color: [0.60, 0.55, 0.50] },
+                Some([107040.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, jupiter_mu]),
+                None, Some((9.89 * 2.0, 526.0)), true,
+                Appearance::Sphere { radius: 526.0, color: [0.60, 0.55, 0.50] },
             ),
             BodyDescription::new(
                 "Callisto".into(), Some("Jupiter".into()),
-                Some([18827.0, 0.0, 0.0, 0.0, 0.0, 5.5, 0.0, jupiter_mu]),
-                None, Some((7.18e-3 * 2.0, 48.2)), true,
-                Appearance::Sphere { radius: 48.2, color: [0.40, 0.40, 0.45] },
+                Some([188270.0, 0.0, 0.0, 0.0, 0.0, 5.5, 0.0, jupiter_mu]),
+                None, Some((7.18 * 2.0, 482.0)), true,
+                Appearance::Sphere { radius: 482.0, color: [0.40, 0.40, 0.45] },
             ),
-            // ship: massless, on rails around Jupiter, marked by Some(maneuvers)
+            // ship: massless, on rails around Jupiter, marked by Some(maneuvers).
+            // radius kept small (≈ 1/140 of Jupiter) for a realistic ratio; visible when zoomed in.
             BodyDescription {
                 name: "Ship".into(),
                 parent: Some("Jupiter".into()),
                 orbital_elements: Some(OrbitalElements {
-                    a: 3000.0, e: 0.0, i: 0.0, lan: 0.0,
+                    a: 30000.0, e: 0.0, i: 0.0, lan: 0.0,
                     arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: jupiter_mu,
                 }),
                 world_pos: None,
                 mass: None,
                 focusable: true,
-                appearance: Appearance::Sphere { radius: 15.0, color: [1.0, 0.3, 0.3] },
+                appearance: Appearance::Sphere { radius: 50.0, color: [1.0, 0.3, 0.3] },
                 maneuvers: Some(Maneuvers::default()),
+                // engines: max_accel ≫ local gravity (μ/r² ≈ 1.4e-4 at this orbit) so Hold/StationKeep have authority
+                propulsion: Some(Propulsion { max_accel: 0.1, throttle: 1.0 }),
             },
         ],
     }
 }
-

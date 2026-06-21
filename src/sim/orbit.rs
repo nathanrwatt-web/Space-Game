@@ -22,6 +22,37 @@ impl Orbit {
             parent: sv.frame,
         }
     }
+
+    // builds a stable coast orbit from a statevec (pos, vel)
+    pub fn park_from_statevec(sv: &StateVec, mu: f64, body_radius: f64, t: f64) -> Self {
+        let natural = Self::from_statevec(sv, mu, t);
+        let el = natural.elements;
+        let periapsis = el.a * (1.0 - el.e);
+        let stable = el.a.is_finite() && el.e.is_finite() && el.e < 1.0 && periapsis > body_radius;
+        if stable {
+            return natural;
+        }
+
+        // circularize at the current radius, keeping the ship's heading if it has one
+        let r = sv.pos.length();
+        if !(r > 0.0) {
+            return natural; // at the body centre; nothing sensible to do
+        }
+        let r_hat = sv.pos / r;
+        let v_circ = (mu / r).sqrt();
+        let tang = sv.vel - sv.vel.dot(r_hat) * r_hat; // tangential part of current velocity
+        let dir = if tang.length() > 1e-6 {
+            tang.normalize()
+        } else {
+            // no tangential motion: pick an arbitrary perpendicular for a sane plane
+            let axis = if r_hat.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+            r_hat.cross(axis).normalize()
+        };
+        Self {
+            elements: OrbitalElements::from_state(sv.pos, dir * v_circ, mu, t),
+            parent: sv.frame,
+        }
+    }
 }
 
 #[derive(Component, Default, Clone, Serialize, Deserialize)]
@@ -39,6 +70,13 @@ pub struct Maneuvers {
 pub struct Body {
     pub mu: f64,
     pub radius: f64,
+}
+
+// Operational shell radius for a body, the sphere ships move on
+pub const SHELL_FACTOR: f64 = 4.0;
+
+pub fn shell_radius(body: &Body) -> f64 {
+    body.radius * SHELL_FACTOR
 }
 
 #[allow(clippy::complexity)]
@@ -131,7 +169,7 @@ pub fn execute_maneuvers(
     }
 }
 
-// absoulte (pos, vel) by summing local vectors up the parent chain 
+// absoulte (pos, vel) by summing local vectors up the parent chain
 pub(crate) fn absolute_state(
     e: Entity, 
     locals: &HashMap<Entity, (DVec3, DVec3, Entity)>, // pos, vel, parent 
@@ -154,4 +192,42 @@ pub(crate) fn absolute_state(
 
     cache.insert(e, state);
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MU: f64 = 1.267e17;
+
+    #[test]
+    fn park_from_rest_gives_stable_circular_orbit() {
+        // after Hold the velocity is ~0 (no real orbit); park must circularize so the
+        // ship exits to a clean, flyable orbit instead of a degenerate plunge.
+        let (body_radius, r) = (7.0e6, 1.0e7);
+        let sv = StateVec { pos: DVec3::new(r, 0.0, 0.0), vel: DVec3::ZERO, frame: Entity::PLACEHOLDER };
+        let el = Orbit::park_from_statevec(&sv, MU, body_radius, 0.0).elements;
+
+        assert!(el.e < 1e-3, "should be ~circular, e = {}", el.e);
+        assert!(el.a * (1.0 - el.e) > body_radius, "periapsis below the body");
+        for k in 0..8 {
+            let p = el.offset_at(el.period() * k as f64 / 8.0);
+            assert!(p.is_finite() && (p.length() - r).abs() / r < 1e-3, "bad point {p:?}");
+        }
+    }
+
+    #[test]
+    fn park_keeps_a_good_orbit() {
+        // a healthy bound orbit must be preserved (velocity not snapped to circular)
+        let r = 1.0e7;
+        let vc = (MU / r).sqrt();
+        let sv = StateVec {
+            pos: DVec3::new(r, 0.0, 0.0),
+            vel: DVec3::new(0.0, vc * 0.95, 0.0),
+            frame: Entity::PLACEHOLDER,
+        };
+        let el = Orbit::park_from_statevec(&sv, MU, 1.0e6, 0.0).elements;
+        let (_, v) = el.state_vectors_at(0.0);
+        assert!((v.length() - vc * 0.95).abs() / (vc * 0.95) < 1e-6, "good orbit was altered");
+    }
 }

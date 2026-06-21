@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::math::DVec3;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy_egui::{egui, EguiContexts};
 
 use crate::body_traits::Focusable;
@@ -104,6 +105,7 @@ pub fn debug_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<DebugUi>,
     clock: Res<SimClock>,
+    diagnostics: Res<DiagnosticsStore>,
     mode: Res<State<GameState>>,
     mut next_mode: ResMut<NextState<GameState>>,
     cam: Single<&OrbitCam, With<Camera>>,
@@ -122,6 +124,10 @@ pub fn debug_panel(
 
     let t = clock.t;
     let warp = clock.warp();
+    // smoothed FPS from FrameTimeDiagnosticsPlugin; None until the first frames are sampled
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed());
     let mut selected = state.selected.or(Some(cam.focus));
 
     // ---- list labels + candidate parents (read-only, before the closure) ----
@@ -207,7 +213,7 @@ pub fn debug_panel(
     // edit-mode controls
     let in_edit = *mode.get() == GameState::Editing;
     let mut toggle_mode_clicked = false;
-    // editable copy of the selected orbit, re-anchored to "now" so resizing/reshaping
+    // editable copy of the selected orbit, re-anchored to now so resizing/reshaping
     // holds the body's current angular position (and resume is seamless)
     let mut edit_el = sel_el.map(|el| {
         let mut x = el;
@@ -228,6 +234,10 @@ pub fn debug_panel(
                 }
             });
             ui.label(format!("t = {t:.1} s     warp = {warp:.0} sim-s/s"));
+            match fps {
+                Some(fps) => ui.label(format!("fps = {fps:.1}")),
+                None => ui.label("fps = --"),
+            };
             ui.separator();
 
             ui.label("entities");
@@ -241,7 +251,7 @@ pub fn debug_panel(
                 ui.label(line);
             }
 
-            // --- edit orbital elements (Edit mode, on-rails entity) ---
+            // --- edit orbital elements for Edit mode, on-rails entity ---
             if in_edit && let Some(ee) = edit_el.as_mut() {
                 ui.separator();
                 ui.label("edit orbit (epoch = now)");
@@ -323,6 +333,7 @@ pub fn debug_panel(
             }
 
             // --- spawn ---
+            // TODO: add propulsion to spawned ships 
             ui.separator();
             ui.collapsing("spawn", |ui| {
                 ui.horizontal(|ui| {

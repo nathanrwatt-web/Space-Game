@@ -217,6 +217,7 @@ pub fn save_level(
             focusable: true,
             appearance: appearance.clone(),
             maneuvers: None,
+            propulsion: None, // editor bodies are never ships
         });
     }
     let level = Level { bodies: descs };

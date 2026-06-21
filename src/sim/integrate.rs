@@ -1,12 +1,15 @@
 use bevy::prelude::*;
 use bevy::math::DVec3;
+use serde::{Serialize, Deserialize};
 
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::Body;
+use crate::sim::guidance::{Guidance, hold, station_keep, move_to};
 
 // Fixed physics step, in *sim seconds*.
 pub(crate) const PHYS_DT: f64 = 1.0 / 30.0;
-const MAX_SUBSTEPS: u32 = 64;
+// Guidance is re-evaluated every substep, so substeps must stay small, but also bounded
+const MAX_SUBSTEPS: u32 = 512;
 
 #[derive(Component, Clone, Copy, Debug)]
 pub struct StateVec {
@@ -22,10 +25,10 @@ impl StateVec {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Propulsion {
-    pub max_accel: f64,  
-    pub throttle:  f64,  // ie how much gas is on the pedal 
+    pub max_accel: f64,
+    pub throttle:  f64,  // ie how much gas is on the pedal
 }
 
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -73,23 +76,15 @@ pub(crate) fn verlet_step( pos: &mut DVec3, vel: &mut DVec3,
     *vel += 0.5 * (a0 + a1) * dt;
 }
 
-// rseolve guidance vs crafts thrust limit 
-fn commanded_thrust(cmd: Option<&ThrustCommand>, prop: &Propulsion) -> DVec3 {
-    let want = cmd.map_or(DVec3::ZERO, |c| c.accel);
-    let limit = prop.max_accel * prop.throttle.clamp(0.0, 1.0);
-    let mag = want.length();
-    // if thrust needed more than limit then return want with maxed according to limit 
-    if mag > limit && mag > 0.0 {
-        want * (limit / mag)
-    } else { 
-        want 
-    }
+// clamp a desired acceleration to the craft's thrust limit
+fn clamp_accel(a: DVec3, limit: f64) -> DVec3 {
+    let mag = a.length();
+    if mag > limit && mag > 0.0 { a * (limit / mag) } else { a }
 }
 
 #[derive(Resource, Default)]
 pub struct PhysAccumulator {
-    last_t: f64, 
-    accum: f64, 
+    last_t: f64,
     initialized: bool,
 }
 
@@ -98,9 +93,9 @@ pub fn integrate_powered(
     clock: Res<SimClock>,
     mut acc: ResMut<PhysAccumulator>,
     bodies: Query<&Body>,
-    mut ships: Query<(&mut StateVec, &Propulsion, Option<&ThrustCommand>)>,
+    mut ships: Query<(&mut StateVec, &Propulsion, &Guidance, &mut ThrustCommand)>,
 ) {
-    // on first tick 
+    // on first tick
     if !acc.initialized {
         acc.last_t = clock.t;
         acc.initialized = true;
@@ -108,32 +103,40 @@ pub fn integrate_powered(
     }
 
     let dt_total = clock.t - acc.last_t;
-    acc.last_t = clock.t; // update last time 
-    if dt_total <= 0.0 { return; } // exit early if paused 
-    acc.accum += dt_total; 
+    acc.last_t = clock.t; // update last time
+    if dt_total <= 0.0 { return; } // exit early if paused
 
-    // compute number of steps in between a whole step and max substeps 
-    let mut steps = 0;
-    while acc.accum >= PHYS_DT && steps < MAX_SUBSTEPS {
-        for (mut sv, prop, cmd) in &mut ships {
+    // Advance every powered craft by exactly dt_total this frame
+    let substeps = ((dt_total / PHYS_DT).ceil() as u32).clamp(1, MAX_SUBSTEPS);
+    let dt = dt_total / substeps as f64;
+    for _ in 0..substeps {
+        for (mut sv, prop, guidance, mut cmd) in &mut ships {
             let Ok(body) = bodies.get(sv.frame) else { continue };
+            let mu = body.mu;
             let sources = [GravitySource {
-                mu: body.mu,
-                pos: DVec3::ZERO // sits at the center of the local frame 
+                mu,
+                pos: DVec3::ZERO // sits at the center of the local frame
             }];
-            let thrust = commanded_thrust(cmd, prop); // thrust to be applied 
-            let (mut pos, mut vel) = (sv.pos, sv.vel);
 
-            verlet_step(&mut pos, &mut vel, &sources, thrust, PHYS_DT); // numerically integrate 
+            // guidance must be reevaluated becasue sim-seconds can be large, 
+            // causing the original order to become invalid
+            let limit = prop.max_accel * prop.throttle.clamp(0.0, 1.0);
+            let desired = match *guidance {
+                Guidance::Idle => DVec3::ZERO,
+                Guidance::Hold => hold(sv.pos, sv.vel, mu),
+                Guidance::StationKeep { radius } => station_keep(sv.pos, sv.vel, mu, radius),
+                Guidance::MoveTo { target } => move_to(sv.pos, sv.vel, mu, target, limit),
+                Guidance::Seek { .. } => cmd.accel, // sampled once/frame by apply_guidance
+            };
+            let thrust = clamp_accel(desired, limit); // thrust to be applied
+            cmd.accel = thrust; // reflect the thrust actually applied
+
+            let (mut pos, mut vel) = (sv.pos, sv.vel);
+            verlet_step(&mut pos, &mut vel, &sources, thrust, dt); // numerically integrate
             sv.pos = pos;
             sv.vel = vel;
         }
-        acc.accum -= PHYS_DT;
-        steps += 1;
     }
-
-    // reset accumulation 
-    if steps == MAX_SUBSTEPS { acc.accum = 0.0; }
 }
 
 #[cfg(test)]

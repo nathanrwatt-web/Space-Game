@@ -1,13 +1,12 @@
 use bevy::prelude::*;
-use bevy::math::{Isometry3d, DVec3};
+use bevy::math::{Isometry3d};
 use crate::math::orbital_elements::OrbitalElements;
-use crate::sim::orbit::{Orbit, Body, Maneuvers, absolute_state};
+use crate::sim::orbit::{Orbit, Body, Maneuvers};
 use crate::world_pos::WorldPos;
 use crate::sim::clock::SimClock;
-use std::collections::HashMap;
+use crate::sim::broadphase::Broadphase;
 
 // Laplace sphere of influence 
-
 pub fn soi_radius(a: f64, mu_body: f64, mu_parent: f64) -> f64 {
     a * (mu_body / mu_parent).powf(0.4)
 }
@@ -15,56 +14,33 @@ pub fn soi_radius(a: f64, mu_body: f64, mu_parent: f64) -> f64 {
 // update the sphere of influence for ships 
 pub fn update_soi(
     clock: Res<SimClock>,
+    bp: Res<Broadphase>,
     mut ships: Query<(Entity, &mut Orbit), With<Maneuvers>>,
-    bodies: Query<(Entity, &Orbit, &Body), Without<Maneuvers>>,
-    roots: Query<(Entity, &WorldPos), Without<Orbit>>,
+    bodies: Query<(&Orbit, &Body), Without<Maneuvers>>,
 ) {
     let t = clock.t;
-
-    // current state
-    let mut locals: HashMap<Entity, (DVec3, DVec3, Entity)> = HashMap::new();
-    for (entity, orbit, _) in &bodies {
-        let (pos, vel) = orbit.elements.state_vectors_at(t);
-        locals.insert(entity, (pos, vel, orbit.parent));
-    }
-
-    for (entity, orbit) in ships.iter() {
-        let (pos, vel) = orbit.elements.state_vectors_at(t);
-        locals.insert(entity, (pos, vel, orbit.parent));
-    }
-
-    let root_pos: HashMap<Entity, DVec3> = roots
-        .iter()
-        .map(|(e, wp)| (e, wp.0))
-        .collect();
-
-    let mut cache = HashMap::new();
-    for (ship_e, mut orbit) in ships.iter_mut() {
-        let (r_ship, v_ship) = absolute_state(ship_e, &locals, &root_pos, &mut cache);
+    for (_ship_e, mut orbit) in &mut ships {
         let parent = orbit.parent;
+        let (ship_local, ship_vel) = orbit.elements.state_vectors_at(t); // relative to parent
 
-        // ASCEND: outside current parent's SOI?
-        if let Ok((_, p_orbit, p_body)) = bodies.get(parent) {
+        // ASCEND: outside the parent's SOI?
+        if let Ok((p_orbit, p_body)) = bodies.get(parent) {
             let r_soi_p = soi_radius(p_orbit.elements.a, p_body.mu, p_orbit.elements.mu);
-            let (r_p, _) = absolute_state(parent, &locals, &root_pos, &mut cache);
-            if (r_ship - r_p).length() > r_soi_p {
-                let gp = p_orbit.parent;
-                let gp_mu = p_orbit.elements.mu;       // = grandparent's G·M (invariant)
-                let (r_gp, v_gp) = absolute_state(gp, &locals, &root_pos, &mut cache);
-                orbit.elements = OrbitalElements::from_state(r_ship - r_gp, v_ship - v_gp, gp_mu, t);
-                orbit.parent = gp;
+            if ship_local.length() > r_soi_p {
+                let (p_local, p_vel) = p_orbit.elements.state_vectors_at(t); // parent rel. grandparent
+                orbit.elements = OrbitalElements::from_state(
+                    p_local + ship_local, p_vel + ship_vel, p_orbit.elements.mu, t);
+                orbit.parent = p_orbit.parent;
                 continue;
             }
         }
 
         // DESCEND: inside a sibling's SOI?
-        for (b_e, b_orbit, b_body) in &bodies {
-            if b_orbit.parent != parent || b_e == ship_e { continue; }
-            let r_soi_b = soi_radius(b_orbit.elements.a, b_body.mu, b_orbit.elements.mu);
-            let (r_b, v_b) = absolute_state(b_e, &locals, &root_pos, &mut cache);
-            if (r_ship - r_b).length() < r_soi_b {
-                orbit.elements = OrbitalElements::from_state(r_ship - r_b, v_ship - v_b, b_body.mu, t);
-                orbit.parent = b_e;
+        for c in bp.soi_candidates(parent, ship_local) {
+            if (ship_local - c.pos).length() < c.soi {
+                orbit.elements = OrbitalElements::from_state(
+                    ship_local - c.pos, ship_vel - c.vel, c.mu, t);
+                orbit.parent = c.entity;
                 break;
             }
         }

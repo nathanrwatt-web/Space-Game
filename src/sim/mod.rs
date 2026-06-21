@@ -21,4 +21,9 @@ pub mod mission;
 
 // handles numeric integration for continuous movement
 pub mod integrate;
+
+// what the ship is doing with thrust 
 pub mod guidance;
+
+// cell handling for frame calculations 
+pub mod broadphase; 

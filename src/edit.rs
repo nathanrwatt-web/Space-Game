@@ -3,7 +3,7 @@ use bevy_egui::input::EguiWantsInput;
 use std::f64::consts::{PI, TAU};
 
 use crate::camera::OrbitCam;
-use crate::debug_ui::DebugUi;
+use crate::debug::DebugUi;
 use crate::game_state::GameState;
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::Orbit;
@@ -19,8 +19,8 @@ pub struct EditHandle {
     pub sign: f64, // +-1 for the end of the axis orientation
 }
 
-// the body the orbit gizmos act on. Set each frame by run_handle_target (Run) or the editor
-// (editor_handle_target). None ⇒ handles hidden. Lets one handle implementation serve both modes.
+// the body the orbit gizmos act on. Set each frame by run_handle_target (Run) from the debug
+// selection. None ⇒ handles hidden.
 #[derive(Resource, Default)]
 pub struct HandleTarget(pub Option<Entity>);
 

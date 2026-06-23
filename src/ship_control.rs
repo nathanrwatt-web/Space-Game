@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 
 use crate::world_pos::WorldPos;
-use crate::debug_ui::DebugUi;
+use crate::debug::DebugUi;
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::{Orbit, Body, Maneuvers, shell_radius};
 use crate::sim::integrate::{StateVec, ThrustCommand};

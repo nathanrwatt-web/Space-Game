@@ -7,13 +7,11 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::game_state::{AppMode, GameState};
 use crate::worlds::{self, CurrentWorld};
-use crate::editor::{self, CurrentLevel};
 
-// run_if(AppMode::Menu): play a world (Run), open the level editor (Edit), or quit.
+// run_if(AppMode::Menu): play a world (Run) or quit.
 pub fn start_screen(
     mut contexts: EguiContexts,
     mut world: ResMut<CurrentWorld>,
-    mut level: ResMut<CurrentLevel>,
     mut app_next: ResMut<NextState<AppMode>>,
     mut exit: MessageWriter<AppExit>,
 ) -> Result {
@@ -48,20 +46,6 @@ pub fn start_screen(
                     }
                 }
 
-                // --- editor ---
-                ui.add_space(14.0);
-                ui.label("Level Editor:");
-                if ui.button("New Level").clicked() {
-                    level.0 = Some(editor_next_name());
-                    app_next.set(AppMode::Edit);
-                }
-                for name in worlds::list_dirs(editor::LEVELS_ROOT) {
-                    if ui.button(format!("edit {name}")).clicked() {
-                        level.0 = Some(name);
-                        app_next.set(AppMode::Edit);
-                    }
-                }
-
                 ui.add_space(14.0);
                 if ui.button("Quit").clicked() {
                     exit.write(AppExit::Success);
@@ -71,19 +55,7 @@ pub fn start_screen(
     Ok(())
 }
 
-// first free "level_N" folder name
-fn editor_next_name() -> String {
-    let mut n = 1;
-    loop {
-        let name = format!("level_{n}");
-        if !editor::level_dir(&name).exists() {
-            return name;
-        }
-        n += 1;
-    }
-}
-
-// menu for once systems are running. 
+// menu for once systems are running.
 pub fn pause_menu(
     mut contexts: EguiContexts,
     mut next: ResMut<NextState<GameState>>,

@@ -7,30 +7,23 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 use crate::camera::{OrbitCam, orbit_camera, focus_on_click};
 use crate::edit::{spawn_handles, position_handles, drag_handle, run_handle_target, HandleTarget};
 use crate::log_capture::{LogWindow, toggle_log_window, log_panel};
-use crate::sim::orbit::{Orbit, Maneuvers, Burn, Body, shell_radius, propagate_orbits, draw_orbits, execute_maneuvers};
+use crate::sim::orbit::{Orbit, Maneuvers, Body, shell_radius, propagate_orbits, draw_orbits, execute_maneuvers};
 use crate::sim::{
     soi::{draw_soi, update_soi, soi_radius},
     clock::{SimClock, warp_keys, advance_clock, clamp_warp},
     mission::{plan_mission, plan_escape, plan_root_capture},
     capture::{ScheduledCapture, execute_capture},
     integrate::{PhysAccumulator, integrate_powered},
-    guidance::{apply_guidance, debug_guidance_keys, debug_toggle_powered},
+    guidance::apply_guidance,
     broadphase::{Broadphase, build_broadphase},
 };
 use crate::math::orbital_elements::OrbitalElements;
 use crate::world_pos::WorldPos;
 use crate::body_traits::Focusable;
-use crate::debug_ui::{DebugUi, MissionReadout, toggle_debug_ui, debug_panel, debug_is_open};
+use crate::debug::{DebugUi, MissionReadout, debug_is_open, debug_camera, debug_cam_inactive};
 use crate::game_state::{AppMode, GameState, not_menu, load_scene, save_scene, toggle_mode, despawn_world};
 use crate::menu::{start_screen, pause_menu};
 use crate::worlds::CurrentWorld;
-use crate::editor::{
-    CurrentLevel, EditorCamera, EditorSaveRequest, EditorSelection, EditorFocus,
-    EditorWindows, EditorSpawnForm,
-    editor_setup, editor_teardown, editor_time, save_level, editor_camera, editor_ui,
-    editor_handle_target, editor_pick_select,
-    draw_editor_grid, draw_origin_axes, draw_selection_highlight,
-};
 use crate::ship_control::move_order;
 
 // Ordered gameplay pipeline. Systems keep their own run conditions
@@ -88,7 +81,6 @@ impl Plugin for SimPlugin {
                 warp_keys.in_set(GameSet::Time),                                          // time change settings
                 clamp_warp.in_set(GameSet::Time).before(advance_clock),                   // cap warp while powered craft fly
                 advance_clock.in_set(GameSet::Time).run_if(in_state(GameState::Running)), // change the time
-                debug_burn_key.in_set(GameSet::Maneuver),                                 // Custom burns
                 execute_maneuvers.in_set(GameSet::Maneuver),                              // regular burns
                 build_broadphase.in_set(GameSet::Broadphase),                             // internal grid map
                 update_soi.in_set(GameSet::Soi),                                          // update spheres of influence
@@ -96,11 +88,9 @@ impl Plugin for SimPlugin {
                 apply_guidance.in_set(GameSet::Guidance),                                 // generate thrust command for numerical inegration
                 integrate_powered.in_set(GameSet::Integrate),                             // numerical integration for thrust
             ).run_if(in_state(AppMode::Run)))
-        // positions come from elements + clock; needed in Run AND Edit (editor bodies move too)
+        // positions come from elements + clock (only Run is non-menu now)
         .add_systems(Update, propagate_orbits.in_set(GameSet::Propagate).run_if(not_menu))
-        // debug for ship movement
-        .add_systems(Update, (debug_toggle_powered, debug_guidance_keys).run_if(in_state(AppMode::Run)))
-        // draw orbits and soi helper gizmos (Run or Edit, when debug is open)
+        // draw orbits and soi helper gizmos (when the debug inspector is open)
         .add_systems(Update, (draw_orbits, draw_soi).chain().in_set(GameSet::Draw).run_if(debug_is_open).run_if(not_menu))
         // right-click to plan transfer/capture burns
         .add_observer(intercept_transfer);
@@ -114,10 +104,11 @@ impl Plugin for CameraPlugin {
         app
         .add_systems(Startup, (setup, configure_gizmos))
         // focus requests are consumed just before the camera follows them
+        // skipped while the free-flight debug camera has control of the entity
         .add_systems(Update, (
                 apply_focus_request.before(orbit_camera),
                 orbit_camera,
-            ).in_set(GameSet::Camera).run_if(in_state(AppMode::Run)))
+            ).in_set(GameSet::Camera).run_if(in_state(AppMode::Run)).run_if(debug_cam_inactive))
         // after all the position udpates, render it to the screen (any non-menu mode).
         // MUST run before transform propagation, or the GlobalTransform used for rendering
         // is one frame stale — which looks like the world lagging/skipping when the camera moves.
@@ -146,8 +137,8 @@ impl Plugin for EditHandlePlugin {
         .add_systems(Startup, spawn_handles)
         // Run path: drive the orbit-gizmo target from the debug selection
         .add_systems(Update, run_handle_target.run_if(in_state(AppMode::Run)))
-        // orbit-edit handles: both modes (self-gated via HandleTarget), after either camera updates
-        .add_systems(Update, position_handles.after(orbit_camera).after(editor_camera))
+        // orbit-edit handles: self-gated via HandleTarget, after whichever camera updates
+        .add_systems(Update, position_handles.after(orbit_camera).after(debug_camera))
         // drag edit handles to modify orbit
         .add_observer(drag_handle);
     }
@@ -159,58 +150,23 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app
         .add_plugins(EguiPlugin::default())
-        // F1 in the game
-        .init_resource::<DebugUi>()
         // info!() mirror
         .init_resource::<LogWindow>()
         // input + GUI systems
         .add_systems(Update, (
-                toggle_debug_ui,
                 toggle_log_window,
                 toggle_mode.run_if(in_state(AppMode::Run)),
             ))
         .add_systems(EguiPrimaryContextPass, (
-                debug_panel.run_if(in_state(AppMode::Run)),
                 log_panel,
                 start_screen.run_if(in_state(AppMode::Menu)),
                 pause_menu.run_if(in_state(GameState::Paused)),
-                editor_ui.run_if(in_state(AppMode::Edit)),
             ));
     }
 }
 
-// ===== Level editor =====
-pub struct EditorPlugin;
-impl Plugin for EditorPlugin {
-    fn build(&self, app: &mut App) {
-        app
-        // editor ui state + the shared orbit-gizmo target
-        .init_resource::<CurrentLevel>()
-        // non azimuthal camera: free from
-        .init_resource::<EditorCamera>()
-        .init_resource::<EditorSaveRequest>()
-        .init_resource::<EditorSelection>()
-        .init_resource::<EditorFocus>()
-        .init_resource::<EditorWindows>()
-        .init_resource::<EditorSpawnForm>()
-        // edit (level editor) lifecycle
-        .add_systems(OnEnter(AppMode::Edit), editor_setup)
-        .add_systems(OnExit(AppMode::Edit), editor_teardown)
-        // editor: orbit camera + time stepping + save + handle-target (Edit only)
-        .add_systems(Update, (
-                editor_camera, editor_time, save_level, editor_handle_target,
-            ).run_if(in_state(AppMode::Edit)))
-        // editor reference gizmos: adaptive grid + infinite axes + selection highlight, after the camera moves
-        .add_systems(Update, (
-                draw_editor_grid, draw_origin_axes, draw_selection_highlight,
-            ).after(editor_camera).run_if(in_state(AppMode::Edit)))
-        // edit mode selection
-        .add_observer(editor_pick_select);
-    }
-}
-
 // summons light + camera only, the rest of loading is handed to
-// editor start / load screne systems
+// the world load_scene system
 fn setup(
     mut commands: Commands,
 ) {
@@ -237,7 +193,7 @@ fn setup(
     ));
 }
 
-// crisper gizmo lines across the whole app (orbits, SOI, editor grid/axes/handles)
+// crisper gizmo lines across the whole app (orbits, SOI, debug grid/axes/handles)
 fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
     let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
     config.line.width = 2.0;
@@ -251,23 +207,7 @@ fn sync_render_space( camera: Single<&WorldPos, With<Camera>>, mut bodies: Query
     }
 }
 
-// for testing
-fn debug_burn_key(
-    keys: Res<ButtonInput<KeyCode>>,
-    clock: Res<SimClock>,
-    mut ships: Query<(&Orbit, &mut Maneuvers)>,
-) {
-    if !keys.just_pressed(KeyCode::KeyB) { return; }
-    for (orbit, mut maneuvers) in &mut ships {
-        let t = clock.t;
-        let v = orbit.elements.velocity_at(t);
-        let dv = v * 0.1;
-        maneuvers.queue.push_back(Burn { execute_at: t, dv });
-    }
-}
-
-
-// adds a mission which intercepts another body with a hohmann transfer 
+// adds a mission which intercepts another body with a hohmann transfer
 fn intercept_transfer(
     click: On<Pointer<Click>>,
     mut debug: ResMut<DebugUi>,

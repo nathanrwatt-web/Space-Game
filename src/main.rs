@@ -3,17 +3,17 @@ mod math;
 mod sim;
 mod camera;
 mod body_traits;
-mod debug_ui;
+mod debug;
 mod edit;
 mod log_capture;
 mod game_state;
 mod worlds;
 mod menu;
-mod editor;
 mod ship_control;
 mod app;
 
-use app::{WorldPlugin, SimPlugin, CameraPlugin, EditHandlePlugin, UiPlugin, EditorPlugin, ShipControlPlugin};
+use app::{WorldPlugin, SimPlugin, CameraPlugin, EditHandlePlugin, UiPlugin, ShipControlPlugin};
+use debug::DebugPlugin;
 use log_capture::capture_layer;
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -36,7 +36,7 @@ fn main() {
                CameraPlugin,
                EditHandlePlugin,
                UiPlugin,
-               EditorPlugin,
+               DebugPlugin,
                ShipControlPlugin))
        .run();
 }

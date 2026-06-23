@@ -13,13 +13,12 @@ use bevy::prelude::*;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
-// main menu, game running, edit mode
+// main menu, game running
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppMode {
     #[default]
     Menu,
     Run,
-    Edit,
 }
 
 // AppMode::Run sub branches 
@@ -140,7 +139,7 @@ pub fn toggle_mode(
     }
 }
 
-// OnExit(AppMode::Run): tear down the loaded world when leaving a game (to menu or editor).
+// OnExit(AppMode::Run): tear down the loaded world when leaving a game (back to menu).
 pub fn despawn_world(
     mut commands: Commands,
     bodies: Query<Entity, With<Appearance>>,

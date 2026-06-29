@@ -64,12 +64,6 @@ pub struct LogWindow {
 }
 
 
-pub fn toggle_log_window(keys: Res<ButtonInput<KeyCode>>, mut win: ResMut<LogWindow>) {
-    if keys.just_pressed(KeyCode::F2) {
-        win.open = !win.open;
-    }
-}
-
 pub fn log_panel(
     mut contexts: EguiContexts,
     store: Res<LogStore>,

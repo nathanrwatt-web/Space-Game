@@ -6,7 +6,7 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, input::EguiWantsInput};
 
 use crate::camera::{OrbitCam, orbit_camera, focus_on_click};
 use crate::edit::{spawn_handles, position_handles, drag_handle, run_handle_target, HandleTarget};
-use crate::log_capture::{LogWindow, toggle_log_window, log_panel};
+use crate::log_capture::{LogWindow, log_panel};
 use crate::sim::orbit::{Orbit, Maneuvers, Body, shell_radius, propagate_orbits, draw_orbits, execute_maneuvers};
 use crate::sim::{
     soi::{draw_soi, update_soi, soi_radius},
@@ -153,12 +153,10 @@ impl Plugin for UiPlugin {
         // info!() mirror
         .init_resource::<LogWindow>()
         // input + GUI systems
-        .add_systems(Update, (
-                toggle_log_window,
-                toggle_mode.run_if(in_state(AppMode::Run)),
-            ))
+        .add_systems(Update, toggle_mode.run_if(in_state(AppMode::Run)))
         .add_systems(EguiPrimaryContextPass, (
-                log_panel,
+                // the log is a debug tool: only while the F1 overlay is up, toggled from its toolbar
+                log_panel.run_if(in_state(AppMode::Run)).run_if(debug_is_open),
                 start_screen.run_if(in_state(AppMode::Menu)),
                 pause_menu.run_if(in_state(GameState::Paused)),
             ));

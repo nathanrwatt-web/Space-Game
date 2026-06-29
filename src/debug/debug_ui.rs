@@ -11,6 +11,8 @@ use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit};
 use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::soi::soi_radius;
 use crate::world_pos::WorldPos;
+use crate::log_capture::LogWindow;
+use super::DebugCamera;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum BurnFrame {
@@ -65,15 +67,38 @@ impl Default for SpawnForm {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct DebugUi {
-    pub open: bool,
+    pub open: bool,                         // master F1 toggle for the whole debug overlay
     pub selected: Option<Entity>,
     pub burn_form: BurnForm,
     pub spawn_form: SpawnForm,
     pub capture_rp: Option<f64>,            // r_p override; None ⇒ planner default
     pub last_mission: Option<MissionReadout>,
     pub focus_request: Option<Entity>,      // if double click list item in debug
+    // per-tool floating-window toggles (driven by the left toolbar)
+    pub details_open: bool,
+    pub spawn_open: bool,
+    pub ship_open: bool,
+    pub mission_open: bool,
+}
+
+impl Default for DebugUi {
+    fn default() -> Self {
+        Self {
+            open: false,
+            selected: None,
+            burn_form: BurnForm::default(),
+            spawn_form: SpawnForm::default(),
+            capture_rp: None,
+            last_mission: None,
+            focus_request: None,
+            details_open: true, // a sensible default tool to have open
+            spawn_open: false,
+            ship_open: false,
+            mission_open: false,
+        }
+    }
 }
 
 pub fn debug_is_open(ui:  Res<DebugUi>) -> bool {
@@ -100,15 +125,18 @@ pub struct MissionReadout {
     pub captured_e: f64,
 }
 
+// The F1 debug overlay: a left toolbar of tool toggles, an always-on right entity panel, and a
+// floating window per enabled tool. Gated to AppMode::Run + DebugUi.open by its registration.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn debug_panel(
+pub fn debug_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<DebugUi>,
     clock: Res<SimClock>,
-    diagnostics: Res<DiagnosticsStore>,
     mode: Res<State<GameState>>,
     mut next_mode: ResMut<NextState<GameState>>,
     cam: Single<&OrbitCam, With<Camera>>,
+    mut log: ResMut<LogWindow>,
+    mut debug_cam: ResMut<DebugCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -117,17 +145,10 @@ pub fn debug_panel(
         Or<(With<Orbit>, With<Body>)>,
     >,
 ) -> Result {
-    if !state.open {
-        return Ok(());
-    }
     let ctx = contexts.ctx_mut()?;
 
     let t = clock.t;
     let warp = clock.warp();
-    // smoothed FPS from FrameTimeDiagnosticsPlugin; None until the first frames are sampled
-    let fps = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.smoothed());
     let mut selected = state.selected.or(Some(cam.focus));
 
     // ---- list labels + candidate parents (read-only, before the closure) ----
@@ -195,7 +216,6 @@ pub fn debug_panel(
     }
 
     // ---- draw ----
-    let mut open = state.open;
     let mut bf = state.burn_form.clone();
     let mut capture_rp = state.capture_rp;     // Option<f64>, Copy
     let last_mission = state.last_mission;      // Option<MissionReadout>, Copy
@@ -210,6 +230,12 @@ pub fn debug_panel(
     let mut clear_queue = false;
     let mut remove_index: Option<usize> = None;
 
+    // tool-window toggles (mirrored back to state at the end)
+    let mut details_open = state.details_open;
+    let mut spawn_open = state.spawn_open;
+    let mut ship_open = state.ship_open;
+    let mut mission_open = state.mission_open;
+
     // edit-mode controls
     let in_edit = *mode.get() == GameState::Editing;
     let mut toggle_mode_clicked = false;
@@ -223,33 +249,171 @@ pub fn debug_panel(
     });
     let mut el_changed = false;
 
-    egui::Window::new("Debug")
-        .open(&mut open)
-        .default_width(340.0)
-        .show(ctx, |ui| {
+    // ---- left toolbar: a toggle per tool ----
+    egui::SidePanel::left("debug_tools").resizable(false).default_width(120.0).show(ctx, |ui| {
+        ui.label(format!("t = {t:.0}"));
+        ui.label(format!("warp = {warp:.0}"));
+        ui.separator();
+        ui.toggle_value(&mut details_open, "Details");
+        ui.toggle_value(&mut spawn_open, "Spawn");
+        ui.toggle_value(&mut ship_open, "Ship");
+        ui.toggle_value(&mut mission_open, "Mission");
+        ui.separator();
+        ui.toggle_value(&mut log.open, "Log");
+        // free-flight camera: reflect current state, route clicks through the shared toggle path
+        // (so the no-jump seeding in toggle_debug_cam runs for both the button and F2)
+        let mut cam_on = debug_cam.active;
+        if ui.toggle_value(&mut cam_on, "Free cam").changed() {
+            debug_cam.toggle_request = true;
+        }
+    });
+
+    // ---- right panel: the entity list (always shown while debugging) ----
+    egui::SidePanel::right("debug_entities").default_width(220.0).show(ctx, |ui| {
+        ui.label("entities");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (e, label) in &items {
+                let resp = ui.selectable_label(Some(*e) == selected, label);
+                if resp.clicked() { clicked = Some(*e); }                   // single click selects
+                if resp.double_clicked() { focus_double_click = Some(*e); } // double click changes focus
+            }
+        });
+    });
+
+    // ---- Details tool ----
+    if details_open {
+        egui::Window::new("Details").open(&mut details_open).default_width(340.0).show(ctx, |ui| {
+            if detail.is_empty() {
+                ui.label("nothing selected");
+            } else {
+                for line in &detail {
+                    ui.label(line);
+                }
+            }
+        });
+    }
+
+    // ---- Spawn tool ----
+    if spawn_open {
+        // TODO: add propulsion to spawned ships
+        egui::Window::new("Spawn").open(&mut spawn_open).default_width(280.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut sf.kind, SpawnKind::Ship, "Ship");
+                ui.selectable_value(&mut sf.kind, SpawnKind::Body, "Body");
+            });
+            ui.horizontal(|ui| { ui.label("name"); ui.text_edit_singleline(&mut sf.name); });
+
+            let current = sf.parent
+                .and_then(|p| parents.iter().find(|(e, _)| *e == p).map(|(_, l)| l.clone()))
+                .unwrap_or_else(|| "<choose>".to_string());
+            egui::ComboBox::from_label("parent").selected_text(current).show_ui(ui, |ui| {
+                for (e, label) in &parents {
+                    ui.selectable_value(&mut sf.parent, Some(*e), label);
+                }
+            });
+
+            ui.horizontal(|ui| { ui.label("a"); ui.add(egui::DragValue::new(&mut sf.a).speed(1.0)); });
+            if sf.kind == SpawnKind::Body {
+                ui.horizontal(|ui| { ui.label("mu"); ui.add(egui::DragValue::new(&mut sf.mu).speed(1e-6)); });
+            }
+            ui.horizontal(|ui| {
+                ui.label("mesh r");
+                ui.add(egui::DragValue::new(&mut sf.mesh_radius).speed(0.5));
+                ui.color_edit_button_rgb(&mut sf.color);
+            });
+
+            ui.checkbox(&mut sf.advanced, "advanced elements");
+            if sf.advanced {
+                ui.horizontal(|ui| {
+                    ui.label("e"); ui.add(egui::DragValue::new(&mut sf.e).speed(0.001));
+                    ui.label("i"); ui.add(egui::DragValue::new(&mut sf.i).speed(0.01));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("lan"); ui.add(egui::DragValue::new(&mut sf.lan).speed(0.01));
+                    ui.label("arg_pe"); ui.add(egui::DragValue::new(&mut sf.arg_pe).speed(0.01));
+                    ui.label("m0"); ui.add(egui::DragValue::new(&mut sf.m0).speed(0.01));
+                });
+            }
+
+            let enabled = sf.parent.is_some();
+            if ui.add_enabled(enabled, egui::Button::new("spawn")).clicked() {
+                do_spawn = true;
+            }
+        });
+    }
+
+    // ---- Ship tool: maneuver queue + manual burn (ships only) ----
+    if ship_open {
+        egui::Window::new("Ship").open(&mut ship_open).default_width(320.0).show(ctx, |ui| {
+            if !sel_is_ship {
+                ui.label("select a ship to see its maneuvers");
+            } else {
+                ui.label(format!("maneuver queue ({})", sel_queue.len()));
+                for (idx, (exec, dv)) in sel_queue.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "[{idx}] in {:+.1}s  |dv|={:.5}  ({:.4}, {:.4}, {:.4})",
+                            exec - t, dv.length(), dv.x, dv.y, dv.z
+                        ));
+                        if ui.small_button("x").clicked() {
+                            remove_index = Some(idx);
+                        }
+                    });
+                }
+                if !sel_queue.is_empty() && ui.button("clear queue").clicked() {
+                    clear_queue = true;
+                }
+
+                // --- manual burn ---
+                if let Some((r_vec, v_vec)) = sel_state {
+                    ui.separator();
+                    ui.label("manual burn");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut bf.frame, BurnFrame::Prograde, "Pro");
+                        ui.selectable_value(&mut bf.frame, BurnFrame::Retrograde, "Retro");
+                        ui.selectable_value(&mut bf.frame, BurnFrame::RadialOut, "Rad+");
+                        ui.selectable_value(&mut bf.frame, BurnFrame::RadialIn, "Rad−");
+                        ui.selectable_value(&mut bf.frame, BurnFrame::Normal, "Nor+");
+                        ui.selectable_value(&mut bf.frame, BurnFrame::AntiNormal, "Nor−");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("mag");
+                        ui.add(egui::DragValue::new(&mut bf.magnitude).speed(0.0001));
+                        if ui.button("queue framed burn").clicked() {
+                            let dir = match bf.frame {
+                                BurnFrame::Prograde => v_vec.normalize(),
+                                BurnFrame::Retrograde => -v_vec.normalize(),
+                                BurnFrame::RadialOut => r_vec.normalize(),
+                                BurnFrame::RadialIn => -r_vec.normalize(),
+                                BurnFrame::Normal => r_vec.cross(v_vec).normalize(),
+                                BurnFrame::AntiNormal => -r_vec.cross(v_vec).normalize(),
+                            };
+                            pending = Some(dir * bf.magnitude);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("raw dv");
+                        ui.add(egui::DragValue::new(&mut bf.raw.x).speed(0.0001));
+                        ui.add(egui::DragValue::new(&mut bf.raw.y).speed(0.0001));
+                        ui.add(egui::DragValue::new(&mut bf.raw.z).speed(0.0001));
+                        if ui.button("queue raw burn").clicked() {
+                            pending = Some(bf.raw);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    // ---- Mission tool: mode toggle + edit orbit + last-mission readout ----
+    if mission_open {
+        egui::Window::new("Mission").open(&mut mission_open).default_width(300.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(if in_edit { "MODE: EDIT (paused)" } else { "MODE: RUN" });
                 if ui.button(if in_edit { "▶ Run" } else { "⏸ Edit" }).clicked() {
                     toggle_mode_clicked = true;
                 }
             });
-            ui.label(format!("t = {t:.1} s     warp = {warp:.0} sim-s/s"));
-            match fps {
-                Some(fps) => ui.label(format!("fps = {fps:.1}")),
-                None => ui.label("fps = --"),
-            };
-            ui.separator();
-
-            ui.label("entities");
-            for (e, label) in &items {
-                let resp = ui.selectable_label(Some(*e) == selected, label);
-                if resp.clicked() { clicked = Some(*e); } // single click selects 
-                if resp.double_clicked() { focus_double_click = Some(*e); } // double click changes focus 
-            }
-            ui.separator();
-            for line in &detail {
-                ui.label(line);
-            }
 
             // --- edit orbital elements for Edit mode, on-rails entity ---
             if in_edit && let Some(ee) = edit_el.as_mut() {
@@ -275,135 +439,29 @@ pub fn debug_panel(
                 });
             }
 
-            if sel_is_ship {
-                ui.separator();
-                ui.label(format!("maneuver queue ({})", sel_queue.len()));
-                for (idx, (exec, dv)) in sel_queue.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "[{idx}] in {:+.1}s  |dv|={:.5}  ({:.4}, {:.4}, {:.4})",
-                            exec - t, dv.length(), dv.x, dv.y, dv.z
-                        ));
-                        if ui.small_button("x").clicked() {
-                            remove_index = Some(idx);
-                        }
-                    });
-                }
-                if !sel_queue.is_empty() && ui.button("clear queue").clicked() {
-                    clear_queue = true;
-                }
+            // missions
+            ui.separator();
+            let mut overriding = capture_rp.is_some();
+            ui.checkbox(&mut overriding, "override capture r_p");
+            if overriding {
+                let mut v = capture_rp.unwrap_or(5.0);
+                ui.add(egui::DragValue::new(&mut v).speed(0.1).prefix("r_p "));
+                capture_rp = Some(v);
+            } else {
+                capture_rp = None;
             }
 
-            // --- manual burn (ships only) ---
-            if sel_is_ship && let Some((r_vec, v_vec)) = sel_state {
-                ui.separator();
-                ui.label("manual burn");
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut bf.frame, BurnFrame::Prograde, "Pro");
-                    ui.selectable_value(&mut bf.frame, BurnFrame::Retrograde, "Retro");
-                    ui.selectable_value(&mut bf.frame, BurnFrame::RadialOut, "Rad+");
-                    ui.selectable_value(&mut bf.frame, BurnFrame::RadialIn, "Rad−");
-                    ui.selectable_value(&mut bf.frame, BurnFrame::Normal, "Nor+");
-                    ui.selectable_value(&mut bf.frame, BurnFrame::AntiNormal, "Nor−");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("mag");
-                    ui.add(egui::DragValue::new(&mut bf.magnitude).speed(0.0001));
-                    if ui.button("queue framed burn").clicked() {
-                        let dir = match bf.frame {
-                            BurnFrame::Prograde => v_vec.normalize(),
-                            BurnFrame::Retrograde => -v_vec.normalize(),
-                            BurnFrame::RadialOut => r_vec.normalize(),
-                            BurnFrame::RadialIn => -r_vec.normalize(),
-                            BurnFrame::Normal => r_vec.cross(v_vec).normalize(),
-                            BurnFrame::AntiNormal => -r_vec.cross(v_vec).normalize(),
-                        };
-                        pending = Some(dir * bf.magnitude);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("raw dv");
-                    ui.add(egui::DragValue::new(&mut bf.raw.x).speed(0.0001));
-                    ui.add(egui::DragValue::new(&mut bf.raw.y).speed(0.0001));
-                    ui.add(egui::DragValue::new(&mut bf.raw.z).speed(0.0001));
-                    if ui.button("queue raw burn").clicked() {
-                        pending = Some(bf.raw);
-                    }
-                });
+            if let Some(m) = last_mission {
+                ui.label(format!("depart t={:.0}   (in {:.0}s)", m.t_dep, m.wait));
+                ui.label(format!("v_inf = {:.5}", m.v_inf));
+                ui.label(format!("Δv = {:.5} + {:.5} = {:.5}", m.dep_dv, m.capture_dv, m.total_dv));
+                ui.label(format!("capture t={:.0}", m.t_peri));
+                ui.label(format!("orbit a={:.3}  e={:.4}  (r_p {:.3})", m.captured_a, m.captured_e, m.r_p));
+            } else {
+                ui.label("no mission planned yet");
             }
-
-            // --- spawn ---
-            // TODO: add propulsion to spawned ships 
-            ui.separator();
-            ui.collapsing("spawn", |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut sf.kind, SpawnKind::Ship, "Ship");
-                    ui.selectable_value(&mut sf.kind, SpawnKind::Body, "Body");
-                });
-                ui.horizontal(|ui| { ui.label("name"); ui.text_edit_singleline(&mut sf.name); });
-
-                let current = sf.parent
-                    .and_then(|p| parents.iter().find(|(e, _)| *e == p).map(|(_, l)| l.clone()))
-                    .unwrap_or_else(|| "<choose>".to_string());
-                egui::ComboBox::from_label("parent").selected_text(current).show_ui(ui, |ui| {
-                    for (e, label) in &parents {
-                        ui.selectable_value(&mut sf.parent, Some(*e), label);
-                    }
-                });
-
-                ui.horizontal(|ui| { ui.label("a"); ui.add(egui::DragValue::new(&mut sf.a).speed(1.0)); });
-                if sf.kind == SpawnKind::Body {
-                    ui.horizontal(|ui| { ui.label("mu"); ui.add(egui::DragValue::new(&mut sf.mu).speed(1e-6)); });
-                }
-                ui.horizontal(|ui| {
-                    ui.label("mesh r");
-                    ui.add(egui::DragValue::new(&mut sf.mesh_radius).speed(0.5));
-                    ui.color_edit_button_rgb(&mut sf.color);
-                });
-
-                ui.checkbox(&mut sf.advanced, "advanced elements");
-                if sf.advanced {
-                    ui.horizontal(|ui| {
-                        ui.label("e"); ui.add(egui::DragValue::new(&mut sf.e).speed(0.001));
-                        ui.label("i"); ui.add(egui::DragValue::new(&mut sf.i).speed(0.01));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("lan"); ui.add(egui::DragValue::new(&mut sf.lan).speed(0.01));
-                        ui.label("arg_pe"); ui.add(egui::DragValue::new(&mut sf.arg_pe).speed(0.01));
-                        ui.label("m0"); ui.add(egui::DragValue::new(&mut sf.m0).speed(0.01));
-                    });
-                }
-
-                let enabled = sf.parent.is_some();
-                if ui.add_enabled(enabled, egui::Button::new("spawn")).clicked() {
-                    do_spawn = true;
-                }
-            });
-
-            // missions 
-            ui.separator();
-            ui.collapsing("mission", |ui| {
-                let mut overriding = capture_rp.is_some();
-                ui.checkbox(&mut overriding, "override capture r_p");
-                if overriding {
-                    let mut v = capture_rp.unwrap_or(5.0);
-                    ui.add(egui::DragValue::new(&mut v).speed(0.1).prefix("r_p "));
-                    capture_rp = Some(v);
-                } else {
-                    capture_rp = None;
-                }
-
-                if let Some(m) = last_mission {
-                    ui.label(format!("depart t={:.0}   (in {:.0}s)", m.t_dep, m.wait));
-                    ui.label(format!("v_inf = {:.5}", m.v_inf));
-                    ui.label(format!("Δv = {:.5} + {:.5} = {:.5}", m.dep_dv, m.capture_dv, m.total_dv));
-                    ui.label(format!("capture t={:.0}", m.t_peri));
-                    ui.label(format!("orbit a={:.3}  e={:.4}  (r_p {:.3})", m.captured_a, m.captured_e, m.r_p));
-                } else {
-                    ui.label("no mission planned yet");
-                }
-            });
         });
+    }
 
     // ---- writes burn the closure ---
     if let Some(target) = selected && (pending.is_some() || clear_queue || remove_index.is_some()) 
@@ -469,7 +527,31 @@ pub fn debug_panel(
     state.selected = selected;
     state.burn_form = bf;
     state.spawn_form = sf;
-    state.open = open;
     state.capture_rp = capture_rp;
+    state.details_open = details_open;
+    state.spawn_open = spawn_open;
+    state.ship_open = ship_open;
+    state.mission_open = mission_open;
+    Ok(())
+}
+
+// Frame-rate readout, top-right of the screen, shown only while the debug overlay is up.
+pub fn fps_overlay(
+    mut contexts: EguiContexts,
+    diagnostics: Res<DiagnosticsStore>,
+) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    // smoothed FPS from FrameTimeDiagnosticsPlugin; None until the first frames are sampled
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed());
+    egui::Area::new(egui::Id::new("fps_overlay"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+        .show(ctx, |ui| {
+            match fps {
+                Some(fps) => ui.label(format!("fps {fps:.0}")),
+                None => ui.label("fps --"),
+            };
+        });
     Ok(())
 }

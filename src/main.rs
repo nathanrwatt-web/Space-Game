@@ -16,7 +16,7 @@ use app::{WorldPlugin, SimPlugin, CameraPlugin, EditHandlePlugin, UiPlugin, Ship
 use debug::DebugPlugin;
 use log_capture::capture_layer;
 use bevy::{
-    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    diagnostic::FrameTimeDiagnosticsPlugin,
     log::LogPlugin,
     prelude::*,
 };
@@ -27,8 +27,8 @@ fn main() {
            .set(WindowPlugin { primary_window: Some(Window { title: "Orbital".into(), ..default() }),..default() })
            .set(LogPlugin { custom_layer: capture_layer, ..default() }))
        .add_plugins(MeshPickingPlugin)
-       // frame-time diagnostics: collect FPS/frame-time, log them to console (and the LogWindow mirror)
-       .add_plugins((FrameTimeDiagnosticsPlugin::default(), LogDiagnosticsPlugin::default()))
+       // frame-time diagnostics: collect FPS/frame-time for the debug FPS overlay (not logged)
+       .add_plugins(FrameTimeDiagnosticsPlugin::default())
        // gameplay split into cohesive plugins; ordering lives in app::GameSet
        .add_plugins((
                WorldPlugin,

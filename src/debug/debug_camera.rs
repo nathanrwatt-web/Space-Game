@@ -27,6 +27,7 @@ const CELLS: u32 = 40;         // cells per side of each grid (lines = CELLS + 1
 #[derive(Resource, Default)]
 pub struct DebugCamera {
     pub active: bool,
+    pub toggle_request: bool, // set by the debug toolbar button; consumed by toggle_debug_cam
     pub pivot: DVec3,
     pub yaw: f64,
     pub pitch: f64,
@@ -48,15 +49,16 @@ impl DebugCamera {
     }
 }
 
-// F2 toggles the free-flight camera. On activation, seed the orbit state from the current
-// orbit-camera pose (pivot at the focus point, matching distance + viewing angles) so the
-// view doesn't jump as control hands over.
+// F2 (or the debug toolbar button) toggles the free-flight camera. On activation, seed the orbit
+// state from the current orbit-camera pose (pivot at the focus point, matching distance + viewing
+// angles) so the view doesn't jump as control hands over.
 pub fn toggle_debug_cam(
     keys: Res<ButtonInput<KeyCode>>,
     mut debug_cam: ResMut<DebugCamera>,
     cam: Single<(&WorldPos, &OrbitCam), With<Camera>>,
 ) {
-    if !keys.just_pressed(KeyCode::F2) {
+    let pressed = keys.just_pressed(KeyCode::F2) || std::mem::take(&mut debug_cam.toggle_request);
+    if !pressed {
         return;
     }
     debug_cam.active = !debug_cam.active;
@@ -75,6 +77,7 @@ pub fn toggle_debug_cam(
         active: true,
         pivot, yaw, pitch, distance,
         pivot_t: pivot, yaw_t: yaw, pitch_t: pitch, distance_t: distance,
+        ..default()
     };
 }
 

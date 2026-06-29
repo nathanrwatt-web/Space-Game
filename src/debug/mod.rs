@@ -6,7 +6,7 @@ mod debug_ui;
 mod debug_camera;
 mod debug_sim;
 
-pub use debug_ui::{DebugUi, MissionReadout, debug_panel, toggle_debug_ui, debug_is_open};
+pub use debug_ui::{DebugUi, MissionReadout, debug_ui, fps_overlay, toggle_debug_ui, debug_is_open};
 pub use debug_camera::{
     DebugCamera, debug_camera, toggle_debug_cam, debug_cam_active, debug_cam_inactive,
     draw_debug_grid, draw_origin_axes, draw_selection_highlight,
@@ -41,7 +41,10 @@ impl Plugin for DebugPlugin {
         .add_systems(Update, (
                 draw_debug_grid, draw_origin_axes, draw_selection_highlight,
             ).after(debug_camera).run_if(in_state(AppMode::Run)).run_if(debug_cam_active))
-        // F1 inspector panel
-        .add_systems(EguiPrimaryContextPass, debug_panel.run_if(in_state(AppMode::Run)));
+        // F1 debug overlay: toolbar + entity panel + tool windows, plus the top-right FPS readout
+        .add_systems(EguiPrimaryContextPass, (
+                debug_ui.run_if(in_state(AppMode::Run)).run_if(debug_is_open),
+                fps_overlay.run_if(in_state(AppMode::Run)).run_if(debug_is_open),
+            ));
     }
 }

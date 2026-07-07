@@ -1,49 +1,50 @@
-use bevy::math::{DVec3, DQuat};
+use bevy::math::{DQuat, DVec3};
+use serde::{Deserialize, Serialize};
 use std::f64::consts::TAU;
-use serde::{Serialize, Deserialize};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) struct OrbitalElements {
     // ==== SHAPE AND SIZE ====
-    // semi major axis of the elpise 
-    // half the length of the longest axis 
-    pub(crate) a: f64,  
-    // eccentricity, 0 => circle, (0, 1) -> elipse 
-    pub(crate) e: f64,  
+    // semi major axis of the elpise
+    // half the length of the longest axis
+    pub(crate) a: f64,
+    // eccentricity, 0 => circle, (0, 1) -> elipse
+    pub(crate) e: f64,
 
-    // ==== ORIENTATION IN SPACE ==== 
-    // inclination, title of orbital plain relative to reference plain 
-    pub(crate) i: f64, 
+    // ==== ORIENTATION IN SPACE ====
+    // inclination, title of orbital plain relative to reference plain
+    pub(crate) i: f64,
     // Longitude of the ascending node: Ω
-    // in regards to a plane of reference, it represents the horizontal angle 
-    // to the Ascending Node (where the orbit intersects the plane) relative to 
-    // a reference direction which is on that plane 
-    pub(crate) lan: f64, 
+    // in regards to a plane of reference, it represents the horizontal angle
+    // to the Ascending Node (where the orbit intersects the plane) relative to
+    // a reference direction which is on that plane
+    pub(crate) lan: f64,
     // Argument of the Periapsis: ω
-    // Angle from the ascending node to the periapsis measured in the direction 
-    // of motionl. The periapsis is the point in an eliptical orbit where an object 
+    // Angle from the ascending node to the periapsis measured in the direction
+    // of motionl. The periapsis is the point in an eliptical orbit where an object
     // is closest to the center of the mass it is orbitting
-    pub(crate) arg_pe: f64, 
+    pub(crate) arg_pe: f64,
     // ==== EXTRA MISCL. DATA ====
-    // mean anomaly at epoch 
+    // mean anomaly at epoch
     // mean anomaly  M = (2pi / time to complete orbit) * (t - time at which body is at periapsis)
-    // epoch = t_0 
+    // epoch = t_0
     pub(crate) m0: f64,
-    // epoch is some t_0 in seconds 
+    // epoch is some t_0 in seconds
     pub(crate) epoch: f64,
     // this is the parents G·M, which is (m^3 / s^2)
-    // see Proposition 1 
+    // see Proposition 1
     pub(crate) mu: f64,
 }
 
 impl OrbitalElements {
-    // 2pi / n = 2pi / (2pi / T) = T = period 
+    // 2pi / n = 2pi / (2pi / T) = T = period
     pub(crate) fn period(&self) -> f64 {
-        if self.e >= 1.0 { return f64::INFINITY }
-        TAU / self.mean_motion() 
+        if self.e >= 1.0 {
+            return f64::INFINITY;
+        }
+        TAU / self.mean_motion()
     }
 
-    
     pub(crate) fn offset_at(&self, t: f64) -> DVec3 {
         self.state_vectors_at(t).0
     }
@@ -52,10 +53,9 @@ impl OrbitalElements {
         self.state_vectors_at(t).1
     }
 
-    // given a time t, calculate the offset in position and velocity 
+    // given a time t, calculate the offset in position and velocity
     // from reference frame of parent -> (new pos, velocity)
     pub(crate) fn state_vectors_at(&self, t: f64) -> (DVec3, DVec3) {
-
         let n = self.mean_motion();
         // mean anomaly at time t: M = M_0 + n · (t - t_0)
         let m = self.m0 + self.mean_motion() * (t - self.epoch);
@@ -66,13 +66,13 @@ impl OrbitalElements {
 
             let (sin_e, cos_e) = (ea.sin(), ea.cos());
             let b = self.a * (1.0 - self.e * self.e).sqrt(); // semi minor axis 
-        
+
             // see Proposition 4
             let new_pos = DVec3::new(self.a * (cos_e - self.e), b * sin_e, 0.0);
 
             // see Proposition 6
             let edot = n / (1.0 - self.e * cos_e); // derivative of Eccentric Anomaly 
-            // 0 change in non x-y plane because planar orbit 
+            // 0 change in non x-y plane because planar orbit
             let vel = DVec3::new(-self.a * sin_e, b * cos_e, 0.0) * edot;
 
             (q * new_pos, q * vel)
@@ -90,12 +90,12 @@ impl OrbitalElements {
         }
     }
 
-    // see Proposition 7 
-    // reconstructs orbital elements from distance and velocity to parent 
+    // see Proposition 7
+    // reconstructs orbital elements from distance and velocity to parent
     pub(crate) fn from_state(r: DVec3, v: DVec3, mu: f64, epoch: f64) -> Self {
         let r_mag = r.length();
-       
-        // angular momentum 
+
+        // angular momentum
         let h = r.cross(v);
         let h_mag = h.length();
 
@@ -121,10 +121,14 @@ impl OrbitalElements {
 
         let (lan, arg_pe) = if node_mag > 1e-9 {
             let mut lan = (node.x / node_mag).clamp(-1.0, 1.0).acos();
-            if node.y < 0.0 { lan = TAU - lan; } // - => change angle 
+            if node.y < 0.0 {
+                lan = TAU - lan;
+            } // - => change angle 
             let arg_pe = if e > CIRC_EPS {
                 let mut w = (node.dot(e_vec) / (node_mag * e)).clamp(-1.0, 1.0).acos();
-                if e_vec.z < 0.0 { w = TAU - w; }
+                if e_vec.z < 0.0 {
+                    w = TAU - w;
+                }
                 w
             } else {
                 0.0 // circular: no periapsis, fold the whole angle into m0 below
@@ -142,19 +146,23 @@ impl OrbitalElements {
         // With no periapsis ν is the argument of latitude
         let nu = if e > CIRC_EPS {
             let mut nu = (e_vec.dot(r) / (e * r_mag)).clamp(-1.0, 1.0).acos();
-            if r.dot(v) < 0.0 { nu = TAU - nu; }
+            if r.dot(v) < 0.0 {
+                nu = TAU - nu;
+            }
             nu
         } else if node_mag > 1e-9 {
             let mut u = (node.dot(r) / (node_mag * r_mag)).clamp(-1.0, 1.0).acos();
-            if r.z < 0.0 { u = TAU - u; }
+            if r.z < 0.0 {
+                u = TAU - u;
+            }
             u
         } else {
             r.y.atan2(r.x).rem_euclid(TAU)
         };
-        
+
         let m0 = if e < 1.0 {
-            let ea = 2.0 * ((1.0 - e).sqrt() * (nu * 0.5).sin())
-                .atan2((1.0 + e).sqrt() * (nu * 0.5).cos());
+            let ea = 2.0
+                * ((1.0 - e).sqrt() * (nu * 0.5).sin()).atan2((1.0 + e).sqrt() * (nu * 0.5).cos());
             ea - e * ea.sin()
         } else {
             let hea = 2.0 * (((e - 1.0) / (e + 1.0)).sqrt() * (nu * 0.5).tan()).atanh();
@@ -178,8 +186,8 @@ impl OrbitalElements {
         let (r, v) = self.state_vectors_at(t);
         OrbitalElements::from_state(r, v + dv, self.mu, t)
     }
-    
-    // works for both conics, constructs point at the ture anomoly 
+
+    // works for both conics, constructs point at the ture anomoly
     // conic polar equation: r = p / (1 + e·cos ν)
     // semi-latus rectum: p = a(1−e²)
     pub(crate) fn point_at_true_anomaly(&self, nu: f64) -> DVec3 {
@@ -206,113 +214,114 @@ impl OrbitalElements {
     fn orientation(&self) -> DQuat {
         DQuat::from_rotation_z(self.lan)
             * DQuat::from_rotation_x(self.i)
-            *  DQuat::from_rotation_z(self.arg_pe)
+            * DQuat::from_rotation_z(self.arg_pe)
     }
 
-    // see Proposition 5 
+    // see Proposition 5
     fn mean_motion(&self) -> f64 {
         // mean motion is given by G·M / a^{3/2 }
         (self.mu / self.a.abs().powi(3)).sqrt()
     }
 }
 
-
-// see Proposition 2 
-fn solve_kepler(m: f64, e: f64) -> f64 { // mean Anomaly + eccentricity
+// see Proposition 2
+fn solve_kepler(m: f64, e: f64) -> f64 {
+    // mean Anomaly + eccentricity
     // convert to [0, 2pi)
     let m = m.rem_euclid(TAU);
-    
-    // seed guess, some math stuff i'm not totally sure about the derivation  
+
+    // seed guess, some math stuff i'm not totally sure about the derivation
     let mut ea = m + e * m.sin();
 
     // at most 8 iterations of newtons method, see Proposition 3
     for _ in 0..8 {
-        let dx = (ea - e * ea.sin() - m) / (1.0 - e * ea.cos()); 
+        let dx = (ea - e * ea.sin() - m) / (1.0 - e * ea.cos());
         ea -= dx;
-        if dx.abs() < 1e-12 { break; }
+        if dx.abs() < 1e-12 {
+            break;
+        }
     }
     ea // outputs Eccentric Anomaly
 }
 
 fn solve_kepler_hyperbolic(m: f64, e: f64) -> f64 {
-
-    // seed 
+    // seed
     let mut hea = if m.abs() > 6.0 {
         m.signum() * (2.0 * m.abs() / e + 1.8).ln()
     } else {
         m / (e - 1.0) // linear near periapsis 
     };
 
-    for _ in 0..50  {
+    for _ in 0..50 {
         let f = e * hea.sinh() - hea - m;
         let fp = e * hea.cosh() - 1.0;
         let dx = f / fp;
         hea -= dx;
-        if dx.abs() < 1e-12 { break; }
+        if dx.abs() < 1e-12 {
+            break;
+        }
     }
     hea
 }
 
-
-
 /* ===== MATH =====
  *
- * Proposition 1 
- *  Masses 
- *  Two bodies with masses M and m and positions R_M and R_m. 
- *  Acceleration due to G: R_m'' = -GM · r/r^3 and R_M = Gm · r/r^3 
+ * Proposition 1
+ *  Masses
+ *  Two bodies with masses M and m and positions R_M and R_m.
+ *  Acceleration due to G: R_m'' = -GM · r/r^3 and R_M = Gm · r/r^3
  *  r'' = R_m'' - R_M'' = -G(M+m) · r/r^3 = −μ·r/r^3
  *  since m << M, we have μ ≈ GM = mu
  *
- * Proposition 2 
- *  Kepler's equation 
+ * Proposition 2
+ *  Kepler's equation
  *  Mean Anomaly = Eccentric Anomaly - eccentricity · sin(Eccentric Anomaly)
  *  M = E - esin(E)
  *
- * Proposition 3 
- *  dx = f(E)/f'(E) 
+ * Proposition 3
+ *  dx = f(E)/f'(E)
  *  f(E) = E - e sin (E) - M
  *  E_0 = (meanAnomoly + eccentricity * sin(meanAnomoly))  = Eccentric anomoly seed
  *  f'(E) = 1 - e cos(E)
  *
  * Proposition 4
- *  Given Eccentric Anomaly and Kepler's equation, 
+ *  Given Eccentric Anomaly and Kepler's equation,
  *  x = a(cos(E) - e)
  *  y = b(sin(E))
  *  where a and b are the major and minor semi axis
  *
- * Proposition 5: Keplers 3rd Law 
+ * Proposition 5: Keplers 3rd Law
  *  "the square of a planet's orbital period is directly proportional
  *  to the cube of the semi-major axis of its orbit"
- *  aka (some constant) * T^2 = a^3 
+ *  aka (some constant) * T^2 = a^3
  *  mean motion is the average angular speed required to complete a full
- *  revolution 
+ *  revolution
  *  Derivation comes from T = 2pi * sqrt (a^3 / GM )
  *  nT = 2pi so n = GM / sqrt(a^3)
  *
- * Proposition 6 
+ * Proposition 6
  *  E' = mean_motion / ( 1 - e * cos(E)) --- derivative of Keplers equation
- *  vx = -a * sin(E) * E'                --- x-coord derivative 
- *  vy = b * cos(E) * E'                 --- y-coord derivative 
- *  q = angle vector 
+ *  vx = -a * sin(E) * E'                --- x-coord derivative
+ *  vy = b * cos(E) * E'                 --- y-coord derivative
+ *  q = angle vector
  *  Kv = q * (vx, vy, 0)
- * 
- * Proposition 7 
- *  |r| = distance 
- *  h = r.cross(v) := specific angular momentum 
+ *
+ * Proposition 7
+ *  |r| = distance
+ *  h = r.cross(v) := specific angular momentum
  *  h is fixed and perpendicular to the orbital plane
  *  node = (0,0,1) x h = (-h_y, h_x, 0)
  *  d/dt(v × h) = v̇ × h = (−μ/r³)[ r × (r × v) ]
  *          = (−μ/r³)[ r(r·v) − v r² ]
  *          = μ( v/r − (r·v) r / r³ )
- *          = μ · d/dt( r / |r| ) 
- *  specific energy = kinetic + potential 
+ *          = μ · d/dt( r / |r| )
+ *  specific energy = kinetic + potential
  *  ε = v²/2 − μ/r = μ/r − μ/(2a) − μ/r = −μ/(2a)
  *  cos i = (h·ẑ)/|h| = h_z/|h|
  *  cos Ω = node_x/|node|
  *  cos ω = (node·e_vec)/(|node|·e)
  *  tan(E/2) = √((1−e)/(1+e))·tan(ν/2)
-*/ 
+*/
 
 #[cfg(test)]
 mod tests {
@@ -323,7 +332,16 @@ mod tests {
 
     // Sun-centred orbit, epoch 0
     fn elements(a: f64, e: f64, i: f64, lan: f64, arg_pe: f64, m0: f64) -> OrbitalElements {
-        OrbitalElements { a, e, i, lan, arg_pe, m0, epoch: 0.0, mu: MU_SUN }
+        OrbitalElements {
+            a,
+            e,
+            i,
+            lan,
+            arg_pe,
+            m0,
+            epoch: 0.0,
+            mu: MU_SUN,
+        }
     }
 
     // ---- Tier 1: core correctness ----
@@ -340,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    // solve_kepler with e = 0 should just return m 
+    // solve_kepler with e = 0 should just return m
     fn circular_solver_returns_mean_anomaly() {
         for k in 0..50 {
             let m = TAU * k as f64 / 50.0;
@@ -349,11 +367,11 @@ mod tests {
     }
 
     #[test]
-    // edge case tests for mean anomlay = 0 and pi 
+    // edge case tests for mean anomlay = 0 and pi
     fn apsis_anchors() {
         for &e in &[0.0, 0.2, 0.6, 0.9] {
-            assert!(solve_kepler(0.0, e).abs() < 1e-12);        // periapsis: E=0
-            assert!((solve_kepler(PI, e) - PI).abs() < 1e-12);  // apoapsis: E=π
+            assert!(solve_kepler(0.0, e).abs() < 1e-12); // periapsis: E=0
+            assert!((solve_kepler(PI, e) - PI).abs() < 1e-12); // apoapsis: E=π
         }
     }
 
@@ -380,9 +398,9 @@ mod tests {
         let (a, e) = (1.5e11, 0.4);
         let el = elements(a, e, 0.3, 0.9, 0.6, 0.0); // m0=0 ⇒ starts at periapsis
         let r_peri = el.offset_at(0.0).length();
-        let r_apo  = el.offset_at(el.period() / 2.0).length();
+        let r_apo = el.offset_at(el.period() / 2.0).length();
         assert!((r_peri - a * (1.0 - e)).abs() < 1.0, "peri {r_peri}");
-        assert!((r_apo  - a * (1.0 + e)).abs() < 1.0, "apo  {r_apo}");
+        assert!((r_apo - a * (1.0 + e)).abs() < 1.0, "apo  {r_apo}");
     }
 
     #[test]
@@ -391,7 +409,6 @@ mod tests {
         let years = el.period() / (365.25 * 86400.0);
         assert!((years - 1.0).abs() < 0.01, "got {years} yr"); // catches unit bugs
     }
-
 
     #[test]
     fn offset_is_deterministic() {
@@ -429,7 +446,10 @@ mod tests {
             let r = el.offset_at(t).length();
             let v_num = (el.offset_at(t + dt) - el.offset_at(t - dt)).length() / (2.0 * dt);
             let v_vis = (el.mu * (2.0 / r - 1.0 / el.a)).sqrt();
-            assert!((v_num - v_vis).abs() / v_vis < 1e-3, "t={t}: {v_num} vs {v_vis}");
+            assert!(
+                (v_num - v_vis).abs() / v_vis < 1e-3,
+                "t={t}: {v_num} vs {v_vis}"
+            );
         }
     }
 
@@ -488,8 +508,10 @@ mod tests {
             let t = el.period() * k as f64 / 20.0;
             let v_analytic = el.velocity_at(t);
             let v_num = (el.offset_at(t + dt) - el.offset_at(t - dt)) / (2.0 * dt);
-            assert!((v_analytic - v_num).length() / v_num.length() < 1e-6,
-                    "t={t}: {v_analytic:?} vs {v_num:?}");
+            assert!(
+                (v_analytic - v_num).length() / v_num.length() < 1e-6,
+                "t={t}: {v_analytic:?} vs {v_num:?}"
+            );
         }
     }
 
@@ -507,24 +529,27 @@ mod tests {
 
     #[test]
     fn from_state_round_trips() {
-        let el = elements(1.5e11, 0.4, 0.3, 0.9, 0.6, 0.2);   // inclined, generic
+        let el = elements(1.5e11, 0.4, 0.3, 0.9, 0.6, 0.2); // inclined, generic
         for k in 0..12 {
             let t = el.period() * k as f64 / 12.0;
             let (r, v) = el.state_vectors_at(t);
             let el2 = OrbitalElements::from_state(r, v, el.mu, t);
 
             let (r2, v2) = el2.state_vectors_at(t);
-            assert!((r - r2).length() < 1.0,  "pos mismatch at t={t}");
+            assert!((r - r2).length() < 1.0, "pos mismatch at t={t}");
             assert!((v - v2).length() < 1e-6, "vel mismatch at t={t}");
 
-            let t2 = t + 1.0e6;                                 // still locked together later
-            assert!((el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0, "drift at t={t}");
+            let t2 = t + 1.0e6; // still locked together later
+            assert!(
+                (el.offset_at(t2) - el2.offset_at(t2)).length() < 1.0,
+                "drift at t={t}"
+            );
         }
     }
 
     #[test]
     fn from_state_round_trips_equatorial() {
-        let el = elements(1.5e11, 0.3, 0.0, 0.0, 0.7, 0.4);    // i = 0, like a ship
+        let el = elements(1.5e11, 0.3, 0.0, 0.0, 0.7, 0.4); // i = 0, like a ship
         let t = el.period() * 0.37;
         let (r, v) = el.state_vectors_at(t);
         let el2 = OrbitalElements::from_state(r, v, el.mu, t);
@@ -541,8 +566,12 @@ mod tests {
         let r = DVec3::new(1.0e7, 2.0e6, -3.0e6);
         let el = OrbitalElements::from_state(r, DVec3::ZERO, MU_SUN, 0.0);
         assert!(
-            el.a.is_finite() && el.e.is_finite() && el.i.is_finite()
-                && el.lan.is_finite() && el.arg_pe.is_finite() && el.m0.is_finite(),
+            el.a.is_finite()
+                && el.e.is_finite()
+                && el.i.is_finite()
+                && el.lan.is_finite()
+                && el.arg_pe.is_finite()
+                && el.m0.is_finite(),
             "radial state produced non-finite elements: {el:?}"
         );
     }
@@ -550,7 +579,7 @@ mod tests {
     #[test]
     fn hyperbolic_round_trips() {
         let r = DVec3::new(1.5e11, 0.0, 0.0);
-        let v = DVec3::new(0.0, 5.0e4, 1.0e4);            // |v| > escape ⇒ hyperbolic
+        let v = DVec3::new(0.0, 5.0e4, 1.0e4); // |v| > escape ⇒ hyperbolic
         let el = OrbitalElements::from_state(r, v, MU_SUN, 0.0);
         assert!(el.e > 1.0, "e = {}", el.e);
         let (r2, v2) = el.state_vectors_at(0.0);
@@ -561,7 +590,11 @@ mod tests {
     #[test]
     fn hyperbolic_velocity_matches_vis_viva() {
         let el = OrbitalElements::from_state(
-            DVec3::new(1.5e11, 0.0, 0.0), DVec3::new(0.0, 5.0e4, 1.0e4), MU_SUN, 0.0);
+            DVec3::new(1.5e11, 0.0, 0.0),
+            DVec3::new(0.0, 5.0e4, 1.0e4),
+            MU_SUN,
+            0.0,
+        );
         for k in -10..=10 {
             let t = k as f64 * 1.0e5;
             let r = el.offset_at(t).length();

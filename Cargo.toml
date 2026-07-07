@@ -4,14 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.18.1", features = ["serialize"] }
+bevy = { version = "0.18.1", features = ["serialize", "jpeg"] }
 bevy_egui = "0.39.1"
 serde = { version = "1.0.228", features = ["derive"] }
 ron = "0.12"
 
-# Bevy runs miserably slow in an unoptimized debug build (the engine + all the
-# f64 orbital math). Optimize dependencies fully (compiled once, cached) and our
-# own crate lightly so incremental rebuilds stay fast. See Bevy's setup guide.
+# Once optimized to avoid miserable speeds 
 [profile.dev]
 opt-level = 1
 

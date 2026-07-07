@@ -9,9 +9,12 @@ use crate::sim::clock::SimClock;
 use crate::sim::orbit::Orbit;
 use crate::world_pos::WorldPos;
 
-
 #[derive(Clone, Copy, PartialEq)]
-pub enum HandleAxis { Radial, AlongTrack, Normal }
+pub enum HandleAxis {
+    Radial,
+    AlongTrack,
+    Normal,
+}
 
 #[derive(Component)]
 pub struct EditHandle {
@@ -24,10 +27,10 @@ pub struct EditHandle {
 #[derive(Resource, Default)]
 pub struct HandleTarget(pub Option<Entity>);
 
-// drag sensitivities 
-const K_A: f64      = 0.003; // fractional change
+// drag sensitivities
+const K_A: f64 = 0.003; // fractional change
 const K_THETA: f64 = 0.005; // radians of phase per pixel 
-const K_I: f64     = 0.005; // radians per inclination per pixel
+const K_I: f64 = 0.005; // radians per inclination per pixel
 
 fn axis_color(axis: HandleAxis) -> Color {
     match axis {
@@ -38,23 +41,27 @@ fn axis_color(axis: HandleAxis) -> Color {
 }
 
 pub fn spawn_handles(
-    mut commands: Commands, 
+    mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Sphere::new(1.0)); 
-    
-    // create six handles, pairs with opposit signs for each axis 
-    for axis in [HandleAxis::Radial, HandleAxis::AlongTrack, HandleAxis::Normal] {
+    let mesh = meshes.add(Sphere::new(1.0));
+
+    // create six handles, pairs with opposit signs for each axis
+    for axis in [
+        HandleAxis::Radial,
+        HandleAxis::AlongTrack,
+        HandleAxis::Normal,
+    ] {
         let material = materials.add(axis_color(axis));
         for sign in [1.0_f64, -1.0] {
             commands.spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::default(),
-                    Visibility::Hidden, 
-                    WorldPos::ORIGIN,
-                    EditHandle { axis, sign }
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+                WorldPos::ORIGIN,
+                EditHandle { axis, sign },
             ));
         }
     }
@@ -67,16 +74,22 @@ pub fn position_handles(
     cam: Single<&WorldPos, (With<Camera>, Without<EditHandle>)>, // disjoint from the handles
     orbits: Query<(&WorldPos, &Orbit)>,
     positions: Query<&WorldPos, Without<EditHandle>>,
-    mut handles: Query<(&EditHandle, &mut WorldPos,
-        &mut Visibility, &mut Transform), Without<Orbit>>,
+    mut handles: Query<
+        (&EditHandle, &mut WorldPos, &mut Visibility, &mut Transform),
+        Without<Orbit>,
+    >,
     mut gizmos: Gizmos,
 ) {
     let cam_pos = cam.0;
 
-    let found = target.0
+    let found = target
+        .0
         .and_then(|t| orbits.get(t).ok())
         .and_then(|(body_wp, orbit)| {
-            positions.get(orbit.parent).ok().map(|p| (body_wp, orbit, p))
+            positions
+                .get(orbit.parent)
+                .ok()
+                .map(|p| (body_wp, orbit, p))
         });
 
     let Some((body_wp, orbit, parent_wp)) = found else {
@@ -90,9 +103,9 @@ pub fn position_handles(
     let n_hat = orbit.elements.plane_normal();
     let theta_hat = n_hat.cross(r_hat).normalize_or_zero();
 
-    let dist = (body_wp.0 - cam_pos).length();  // distance to whichever camera is active
-    let l = dist * 0.08;                         // offset, ~constant on screen
-    let scale = (dist * 0.01) as f32;            // sphere size, ~constant on screen
+    let dist = (body_wp.0 - cam_pos).length(); // distance to whichever camera is active
+    let l = dist * 0.08; // offset, ~constant on screen
+    let scale = (dist * 0.01) as f32; // sphere size, ~constant on screen
     let body_render = (body_wp.0 - cam_pos).as_vec3();
 
     for (handle, mut wp, mut vis, mut transform) in &mut handles {
@@ -122,16 +135,30 @@ pub fn drag_handle(
     mut orbits: Query<&mut Orbit>,
     cam: Single<(&Camera, &GlobalTransform, &WorldPos), With<Camera>>,
 ) {
-    let Some(target_e) = target.0 else { return; };
-    if egui_wants.wants_any_pointer_input() { return; }
-    if drag.event.button != PointerButton::Primary { return; }
+    let Some(target_e) = target.0 else {
+        return;
+    };
+    if egui_wants.wants_any_pointer_input() {
+        return;
+    }
+    if drag.event.button != PointerButton::Primary {
+        return;
+    }
 
-    let Ok(handle) = handles.get(drag.entity) else { return; };
+    let Ok(handle) = handles.get(drag.entity) else {
+        return;
+    };
     let (camera, cam_gt, cam_wp) = *cam;
 
-    let Ok(mut orbit) = orbits.get_mut(target_e) else { return; };
-    let Ok(body_wp) = positions.get(target_e) else { return; };
-    let Ok(parent_wp) = positions.get(orbit.parent) else { return; };
+    let Ok(mut orbit) = orbits.get_mut(target_e) else {
+        return;
+    };
+    let Ok(body_wp) = positions.get(target_e) else {
+        return;
+    };
+    let Ok(parent_wp) = positions.get(orbit.parent) else {
+        return;
+    };
 
     // world-space direction this handle points along
     let r_hat = (body_wp.0 - parent_wp.0).normalize_or_zero();
@@ -148,9 +175,13 @@ pub fn drag_handle(
     let (Ok(p0), Ok(p1)) = (
         camera.world_to_viewport(cam_gt, body_render),
         camera.world_to_viewport(cam_gt, tip_render),
-    ) else { return; };
+    ) else {
+        return;
+    };
     let screen_axis = p1 - p0;
-    if screen_axis.length() < 1e-3 { return; }
+    if screen_axis.length() < 1e-3 {
+        return;
+    }
     let s = drag.event.delta.dot(screen_axis.normalize()) as f64;
 
     // reanchor
@@ -178,4 +209,3 @@ pub fn run_handle_target(
         None
     };
 }
-

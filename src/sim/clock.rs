@@ -1,22 +1,22 @@
-use bevy::prelude::*;
 use crate::sim::integrate::StateVec;
 use crate::sim::integrate::max_powered_frame_budget;
+use bevy::prelude::*;
 
 // ==== speed settings ====
 const DAY: f64 = 60.0 * 60.0 * 24.0;
 const WARP_LEVELS: [f64; 12] = [
-    0.0,          // paused
-    1.0,          // real time — fine for powered flight
+    0.0, // paused
+    1.0, // real time — fine for powered flight
     10.0,
     60.0,
-    600.0,        // 10 min/s
+    600.0, // 10 min/s
     0.125 * DAY,
     0.25 * DAY,
     0.50 * DAY,
-    1.0  * DAY,   // 1 day — powered-flight ceiling (integration goes slightly inaccurate past here)
-    2.0  * DAY,
+    1.0 * DAY, // 1 day — powered-flight ceiling (integration goes slightly inaccurate past here)
+    2.0 * DAY,
     10.0 * DAY,
-    30.0 * DAY,   // month
+    30.0 * DAY, // month
 ];
 
 #[derive(Resource)]
@@ -29,17 +29,25 @@ pub struct SimClock {
 impl Default for SimClock {
     fn default() -> Self {
         // start at a gentle day-scale rung; loading a world pauses anyway
-        Self { t: 0.0, level: 5, max_level: WARP_LEVELS.len() - 1 }
+        Self {
+            t: 0.0,
+            level: 5,
+            max_level: WARP_LEVELS.len() - 1,
+        }
     }
 }
 
 impl SimClock {
     // effective warp respects the powered-craft ceiling without forgetting the
     // player's requested level
-    pub fn warp(&self) -> f64 { WARP_LEVELS[self.level.min(self.max_level)] }
+    pub fn warp(&self) -> f64 {
+        WARP_LEVELS[self.level.min(self.max_level)]
+    }
 
     // force warp to the paused level (index 0). Loading a world starts frozen.
-    pub fn pause(&mut self) { self.level = 0; }
+    pub fn pause(&mut self) {
+        self.level = 0;
+    }
 
     pub fn faster(&mut self) {
         self.level = (self.level + 1).min(WARP_LEVELS.len() - 1);
@@ -81,7 +89,7 @@ pub fn clamp_warp(
 
 // for now time change will be with brackets
 pub fn warp_keys(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
-    // just_pressed: has the input been pressed during the current frame? 
+    // just_pressed: has the input been pressed during the current frame?
     if keys.just_pressed(KeyCode::BracketRight) {
         clock.faster();
         info!("warp -> {:.0} sim-s/s", clock.warp());

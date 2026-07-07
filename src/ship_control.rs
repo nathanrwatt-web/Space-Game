@@ -1,30 +1,30 @@
 // Player ship commands. Right-clicking issues either a move order on the current shell
 // or a transfer-planning order against another body under the cursor.
 
+use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy_egui::input::EguiWantsInput;
 
 use crate::debug::{DebugUi, MissionReadout};
 use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::capture::ScheduledCapture;
 use crate::sim::clock::SimClock;
+use crate::sim::guidance::Guidance;
 use crate::sim::integrate::{StateVec, ThrustCommand};
 use crate::sim::mission::{plan_escape, plan_mission, plan_root_capture};
-use crate::sim::orbit::{shell_radius, Body, Maneuvers, Orbit, OrbitPropagationCache};
+use crate::sim::orbit::{Body, Maneuvers, Orbit, OrbitPropagationCache, shell_radius};
 use crate::sim::soi::soi_radius;
-use crate::sim::guidance::Guidance;
 use crate::world_pos::WorldPos;
 
-// event for moving to position within shell 
+// event for moving to position within shell
 #[derive(Message, Clone, Copy, Debug)]
 pub struct MoveOrderEvent {
     pub ship: Entity,
     pub target: DVec3,
 }
 
-// event for changing orbits 
+// event for changing orbits
 #[derive(Message, Clone, Copy, Debug)]
 pub struct TransferOrderEvent {
     pub ship: Entity,
@@ -59,12 +59,18 @@ pub fn queue_ship_orders(
         return;
     };
 
-    let Ok((_, frame_wp, frame_body)) = bodies.get(frame) else { return };
+    let Ok((_, frame_wp, frame_body)) = bodies.get(frame) else {
+        return;
+    };
     let shell = shell_radius(frame_body);
 
     let (cam, cam_tf, cam_wp) = *camera;
-    let Some(cursor) = window.cursor_position() else { return };
-    let Ok(ray) = cam.viewport_to_world(cam_tf, cursor) else { return };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let Ok(ray) = cam.viewport_to_world(cam_tf, cursor) else {
+        return;
+    };
 
     let mut nearest: Option<(f32, Entity)> = None;
     for (entity, wp, body) in &bodies {
@@ -75,7 +81,9 @@ pub fn queue_ship_orders(
         }
     }
 
-    if let Some((_, hit)) = nearest && hit != frame {
+    if let Some((_, hit)) = nearest
+        && hit != frame
+    {
         if coast.get(ship).is_ok() {
             transfer_orders.write(TransferOrderEvent {
                 ship,
@@ -87,12 +95,14 @@ pub fn queue_ship_orders(
     }
 
     let center = frame_wp.to_render_space(*cam_wp);
-    let Some(hit) = ray_sphere(ray, center, shell as f32) else { return };
+    let Some(hit) = ray_sphere(ray, center, shell as f32) else {
+        return;
+    };
     let target = (hit - center).as_dvec3();
     move_orders.write(MoveOrderEvent { ship, target });
 }
 
-// move to specific place 
+// move to specific place
 pub fn apply_move_orders(
     mut orders: MessageReader<MoveOrderEvent>,
     clock: Res<SimClock>,
@@ -104,9 +114,11 @@ pub fn apply_move_orders(
     for order in orders.read() {
         if let Ok(orbit) = coast.get(order.ship) {
             commands.entity(order.ship).remove::<Orbit>().insert((
-                StateVec::from_orbit(orbit, clock.t), // transition to velocity 
+                StateVec::from_orbit(orbit, clock.t), // transition to velocity
                 ThrustCommand::default(),
-                Guidance::MoveTo { target: order.target }, // give orders 
+                Guidance::MoveTo {
+                    target: order.target,
+                }, // give orders
             ));
             orbit_cache.dirty = true; // mark as seen 
         } else if let Ok(mut guidance) = guidance_q.get_mut(order.ship) {
@@ -117,7 +129,7 @@ pub fn apply_move_orders(
     }
 }
 
-// move from one body to another 
+// move from one body to another
 pub fn apply_transfer_orders(
     mut orders: MessageReader<TransferOrderEvent>,
     mut debug: ResMut<DebugUi>,
@@ -129,54 +141,76 @@ pub fn apply_transfer_orders(
 ) {
     for order in orders.read() {
         let Ok((ship_orbit, _)) = ships.get(order.ship) else {
-            info!("transfer: selected ship {:?} is not currently coasting", order.ship);
+            info!(
+                "transfer: selected ship {:?} is not currently coasting",
+                order.ship
+            );
             continue;
         };
 
         let ship_parent = ship_orbit.parent;
         let ship_el = ship_orbit.elements;
 
-        let (escape, plan, r_p) = if let Ok((_, target_orbit, target_body)) = bodies.get(order.target) {
+        let (escape, plan, r_p) = if let Ok((_, target_orbit, target_body)) =
+            bodies.get(order.target)
+        {
             let target_el = target_orbit.elements;
             let mu_target = target_body.mu;
             let r_soi = soi_radius(target_el.a, mu_target, target_el.mu);
-            // goal distanct to move from body 
-            let r_p = order.capture_rp.unwrap_or(shell_radius(target_body).min(0.9 * r_soi));
+            // goal distanct to move from body
+            let r_p = order
+                .capture_rp
+                .unwrap_or(shell_radius(target_body).min(0.9 * r_soi));
 
             // ship and target share a parent
             let (escape, plan) = if ship_parent == target_orbit.parent {
-                let Some(plan) = plan_mission(&ship_el, &target_el, mu_target, clock.t, r_p, &[], 0.0) else {
+                let Some(plan) =
+                    plan_mission(&ship_el, &target_el, mu_target, clock.t, r_p, &[], 0.0)
+                else {
                     info!("transfer: no mission found");
                     continue;
                 };
                 (None, plan)
             } else {
                 let Ok((_, parent_orbit, parent_body)) = bodies.get(ship_parent) else {
-                    info!("transfer: ship parent {:?} is not an orbiting body", ship_parent);
+                    info!(
+                        "transfer: ship parent {:?} is not an orbiting body",
+                        ship_parent
+                    );
                     continue;
                 };
-                // parent is not in shared parent or grandparent relation ie IO -> mercury 
+                // parent is not in shared parent or grandparent relation ie IO -> mercury
                 if target_orbit.parent != parent_orbit.parent {
                     info!("transfer: multi-leg planning is not supported yet");
                     continue;
                 }
-                let r_soi_parent = soi_radius(parent_orbit.elements.a, parent_body.mu, parent_orbit.elements.mu);
+                let r_soi_parent = soi_radius(
+                    parent_orbit.elements.a,
+                    parent_body.mu,
+                    parent_orbit.elements.mu,
+                );
                 let Some((escape, ship_grandparent, t_exit)) =
                     plan_escape(&ship_el, &parent_orbit.elements, r_soi_parent, clock.t)
                 else {
                     info!("transfer: could not plan escape from parent SOI");
                     continue;
                 };
-                let Some(plan) =
-                    plan_mission(&ship_grandparent, &target_el, mu_target, t_exit, r_p, &[], 0.0)
-                else {
+                let Some(plan) = plan_mission(
+                    &ship_grandparent,
+                    &target_el,
+                    mu_target,
+                    t_exit,
+                    r_p,
+                    &[],
+                    0.0,
+                ) else {
                     info!("transfer: no transfer found after escape");
                     continue;
                 };
                 (Some(escape), plan)
             };
             (escape, plan, r_p)
-        // what if we are movung to the root? 
+        // what if we are movung to the root?
         } else if let Ok(root_body) = roots.get(order.target) {
             let mu_root = root_body.mu;
             let r_p = order.capture_rp.unwrap_or(shell_radius(root_body));
@@ -186,35 +220,52 @@ pub fn apply_transfer_orders(
                 .iter()
                 .filter(|(entity, orbit, _)| orbit.parent == order.target && *entity != ship_parent)
                 .map(|(_, orbit, body)| {
-                    (orbit.elements, soi_radius(orbit.elements.a, body.mu, orbit.elements.mu))
+                    (
+                        orbit.elements,
+                        soi_radius(orbit.elements.a, body.mu, orbit.elements.mu),
+                    )
                 })
                 .collect();
 
             if ship_parent == order.target {
-                let Some(plan) = plan_root_capture(&ship_el, mu_root, r_p, clock.t, &siblings, primary_floor) else {
+                let Some(plan) =
+                    plan_root_capture(&ship_el, mu_root, r_p, clock.t, &siblings, primary_floor)
+                else {
                     info!("transfer: no root-capture mission found");
                     continue;
                 };
                 (None, plan, r_p)
             } else {
                 let Ok((_, parent_orbit, parent_body)) = bodies.get(ship_parent) else {
-                    info!("transfer: ship parent {:?} is not an orbiting body", ship_parent);
+                    info!(
+                        "transfer: ship parent {:?} is not an orbiting body",
+                        ship_parent
+                    );
                     continue;
                 };
                 if parent_orbit.parent != order.target {
                     info!("transfer: multi-leg root capture is not supported yet");
                     continue;
                 }
-                let r_soi_parent = soi_radius(parent_orbit.elements.a, parent_body.mu, parent_orbit.elements.mu);
+                let r_soi_parent = soi_radius(
+                    parent_orbit.elements.a,
+                    parent_body.mu,
+                    parent_orbit.elements.mu,
+                );
                 let Some((escape, ship_grandparent, t_exit)) =
                     plan_escape(&ship_el, &parent_orbit.elements, r_soi_parent, clock.t)
                 else {
                     info!("transfer: could not plan escape from the parent SOI");
                     continue;
                 };
-                let Some(plan) =
-                    plan_root_capture(&ship_grandparent, mu_root, r_p, t_exit, &siblings, primary_floor)
-                else {
+                let Some(plan) = plan_root_capture(
+                    &ship_grandparent,
+                    mu_root,
+                    r_p,
+                    t_exit,
+                    &siblings,
+                    primary_floor,
+                ) else {
                     info!("transfer: no root capture found after escape");
                     continue;
                 };

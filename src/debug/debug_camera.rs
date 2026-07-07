@@ -4,22 +4,23 @@
 // toward a target for a smooth, professional feel. Also draws editor-style reference gizmos:
 // an adaptive ground grid, infinite RGB origin axes, and a highlight on the selected body.
 
-use bevy::prelude::*;
-use bevy::math::{DVec3, DQuat, Isometry3d};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::math::{DQuat, DVec3, Isometry3d};
+use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::input::EguiWantsInput;
 
-use crate::world_pos::WorldPos;
+use super::DebugUi;
 use crate::camera::OrbitCam;
 use crate::game_state::Appearance;
-use super::DebugUi;
+use crate::sim::orbit::Body;
+use crate::world_pos::WorldPos;
 
 const ORBIT_SENS: f64 = 0.005; // radians per pixel
-const ZOOM_STEP: f64 = 0.88;   // distance multiplier per scroll notch
-const SMOOTH: f64 = 16.0;      // higher = snappier easing
-const WASD_SENS: f64 = 1.5;    // movement
-const CELLS: u32 = 40;         // cells per side of each grid (lines = CELLS + 1)
+const ZOOM_STEP: f64 = 0.88; // distance multiplier per scroll notch
+const SMOOTH: f64 = 16.0; // higher = snappier easing
+const WASD_SENS: f64 = 1.5; // movement
+const CELLS: u32 = 40; // cells per side of each grid (lines = CELLS + 1)
 
 // orbit state: the camera sits `distance` from `pivot`, rotated by yaw then pitch.
 // `_t` fields are the (input-driven) targets; the un-suffixed fields are the eased,
@@ -75,15 +76,25 @@ pub fn toggle_debug_cam(
     let yaw = dir.x.atan2(dir.z);
     *debug_cam = DebugCamera {
         active: true,
-        pivot, yaw, pitch, distance,
-        pivot_t: pivot, yaw_t: yaw, pitch_t: pitch, distance_t: distance,
+        pivot,
+        yaw,
+        pitch,
+        distance,
+        pivot_t: pivot,
+        yaw_t: yaw,
+        pitch_t: pitch,
+        distance_t: distance,
         ..default()
     };
 }
 
 // while the debug camera is active, the normal orbit camera must not also drive the entity
-pub fn debug_cam_active(debug_cam: Res<DebugCamera>) -> bool { debug_cam.active }
-pub fn debug_cam_inactive(debug_cam: Res<DebugCamera>) -> bool { !debug_cam.active }
+pub fn debug_cam_active(debug_cam: Res<DebugCamera>) -> bool {
+    debug_cam.active
+}
+pub fn debug_cam_inactive(debug_cam: Res<DebugCamera>) -> bool {
+    !debug_cam.active
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn debug_camera(
@@ -97,7 +108,7 @@ pub fn debug_camera(
     debug: Res<DebugUi>,
     mut editor: ResMut<DebugCamera>,
     cam: Single<(&Camera, &GlobalTransform, &mut WorldPos, &mut Transform), With<OrbitCam>>,
-    bodies: Query<(&WorldPos, &Appearance), Without<OrbitCam>>, // disjoint from the camera's &mut WorldPos
+    bodies: Query<(&WorldPos, &Appearance, Option<&Body>), Without<OrbitCam>>, // disjoint from the camera's &mut WorldPos
 ) {
     if !editor.active {
         return;
@@ -111,9 +122,8 @@ pub fn debug_camera(
     // current orientation drives screen-aligned pan and the zoom ray
     let rot = DebugCamera::rot(editor.yaw, editor.pitch);
 
-
     let right = rot * DVec3::X;
-    let cam_pos = editor.pivot +  rot * (DVec3::Z * editor.distance); // dist from pivot + movement
+    let cam_pos = editor.pivot + rot * (DVec3::Z * editor.distance); // dist from pivot + movement
 
     // Right click to drag
     if mouse.pressed(MouseButton::Right) && pointer_free {
@@ -138,12 +148,24 @@ pub fn debug_camera(
         };
 
         // WASDEQ keys pressed
-        if keys.pressed(KeyCode::KeyW) { editor.pivot_t += forward_flat * pan_speed; }
-        if keys.pressed(KeyCode::KeyS) { editor.pivot_t -= forward_flat * pan_speed; }
-        if keys.pressed(KeyCode::KeyA) { editor.pivot_t -= right * pan_speed; }
-        if keys.pressed(KeyCode::KeyD) { editor.pivot_t += right * pan_speed; }
-        if keys.pressed(KeyCode::KeyE) { editor.pivot_t += DVec3::Y * pan_speed; }
-        if keys.pressed(KeyCode::KeyQ) { editor.pivot_t -= DVec3::Y * pan_speed; }
+        if keys.pressed(KeyCode::KeyW) {
+            editor.pivot_t += forward_flat * pan_speed;
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            editor.pivot_t -= forward_flat * pan_speed;
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            editor.pivot_t -= right * pan_speed;
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            editor.pivot_t += right * pan_speed;
+        }
+        if keys.pressed(KeyCode::KeyE) {
+            editor.pivot_t += DVec3::Y * pan_speed;
+        }
+        if keys.pressed(KeyCode::KeyQ) {
+            editor.pivot_t -= DVec3::Y * pan_speed;
+        }
     }
 
     // move around by the mosue wheel
@@ -163,11 +185,13 @@ pub fn debug_camera(
         .then_some(debug.selected)
         .flatten();
 
-    if let Some(e) = frame_req && let Ok((wp, appearance)) = bodies.get(e) {
+    if let Some(e) = frame_req
+        && let Ok((wp, appearance, body)) = bodies.get(e)
+    {
         // Choose a framing radius based on the body's appearance.
         let radius = match appearance {
             Appearance::Sphere { radius, .. } => *radius as f64,
-            _ => 50.0,
+            Appearance::Mesh { .. } => body.map_or(50.0, |body| body.radius),
         };
         editor.frame(wp.0, radius);
     }
@@ -177,7 +201,7 @@ pub fn debug_camera(
 
     editor.pivot = editor.pivot.lerp(editor.pivot_t, a);
     editor.yaw += (editor.yaw_t - editor.yaw) * a;
-    editor.pitch   += (editor.pitch_t  - editor.pitch)  * a;
+    editor.pitch += (editor.pitch_t - editor.pitch) * a;
     editor.distance += (editor.distance_t - editor.distance) * a;
 
     // rebuild from new variables
@@ -188,14 +212,31 @@ pub fn debug_camera(
 
 // world point where the cursor ray meets the orbital plane (world z = 0), in f64.
 // The camera renders at ~render-space origin, so the plane sits at render z = -cam_pos.z.
-fn cursor_ground_hit(camera: &Camera, gxf: &GlobalTransform, window: &Window, cam_pos: DVec3) -> Option<DVec3> {
+fn cursor_ground_hit(
+    camera: &Camera,
+    gxf: &GlobalTransform,
+    window: &Window,
+    cam_pos: DVec3,
+) -> Option<DVec3> {
     let cursor = window.cursor_position()?;
     let ray = camera.viewport_to_world(gxf, cursor).ok()?;
-    let o = DVec3::new(ray.origin.x as f64, ray.origin.y as f64, ray.origin.z as f64);
-    let d = DVec3::new(ray.direction.x as f64, ray.direction.y as f64, ray.direction.z as f64);
-    if d.z.abs() < 1e-9 { return None; }
+    let o = DVec3::new(
+        ray.origin.x as f64,
+        ray.origin.y as f64,
+        ray.origin.z as f64,
+    );
+    let d = DVec3::new(
+        ray.direction.x as f64,
+        ray.direction.y as f64,
+        ray.direction.z as f64,
+    );
+    if d.z.abs() < 1e-9 {
+        return None;
+    }
     let t = (-cam_pos.z - o.z) / d.z;
-    if t <= 0.0 { return None; }
+    if t <= 0.0 {
+        return None;
+    }
     Some(o + d * t + cam_pos)
 }
 
@@ -208,7 +249,13 @@ pub(crate) fn nice(x: f64) -> f64 {
     }
     let p = 10f64.powf(x.log10().floor());
     let m = x / p;
-    let n = if m < 2.0 { 1.0 } else if m < 5.0 { 2.0 } else { 5.0 };
+    let n = if m < 2.0 {
+        1.0
+    } else if m < 5.0 {
+        2.0
+    } else {
+        5.0
+    };
     n * p
 }
 
@@ -224,8 +271,18 @@ pub fn draw_debug_grid(
 
     // fade the fine grid out as we zoom out (it gets dense on screen); major stays solid
     let fade = (2.0 - editor.distance / (s * CELLS as f64)).clamp(0.0, 1.0) as f32;
-    draw_grid(&mut gizmos, cam_pos, s, Color::srgba(0.35, 0.35, 0.42, 0.5 * fade));
-    draw_grid(&mut gizmos, cam_pos, s * 10.0, Color::srgba(0.5, 0.5, 0.58, 0.85));
+    draw_grid(
+        &mut gizmos,
+        cam_pos,
+        s,
+        Color::srgba(0.35, 0.35, 0.42, 0.5 * fade),
+    );
+    draw_grid(
+        &mut gizmos,
+        cam_pos,
+        s * 10.0,
+        Color::srgba(0.5, 0.5, 0.58, 0.85),
+    );
 }
 
 fn draw_grid(gizmos: &mut Gizmos, cam_pos: DVec3, s: f64, color: Color) {
@@ -249,9 +306,21 @@ pub fn draw_origin_axes(
 ) {
     let origin = (-cam.0).as_vec3(); // world origin in render space
     let l = (editor.distance * 1000.0) as f32;
-    gizmos.line(origin - Vec3::X * l, origin + Vec3::X * l, Color::srgb(0.9, 0.25, 0.25));
-    gizmos.line(origin - Vec3::Y * l, origin + Vec3::Y * l, Color::srgb(0.3, 0.85, 0.3));
-    gizmos.line(origin - Vec3::Z * l, origin + Vec3::Z * l, Color::srgb(0.35, 0.5, 1.0));
+    gizmos.line(
+        origin - Vec3::X * l,
+        origin + Vec3::X * l,
+        Color::srgb(0.9, 0.25, 0.25),
+    );
+    gizmos.line(
+        origin - Vec3::Y * l,
+        origin + Vec3::Y * l,
+        Color::srgb(0.3, 0.85, 0.3),
+    );
+    gizmos.line(
+        origin - Vec3::Z * l,
+        origin + Vec3::Z * l,
+        Color::srgb(0.35, 0.5, 1.0),
+    );
 }
 
 // Selected-body highlight: an orange wire sphere plus a small orientation triad.
@@ -259,13 +328,17 @@ pub fn draw_selection_highlight(
     mut gizmos: Gizmos,
     cam: Single<&WorldPos, With<Camera>>,
     debug: Res<DebugUi>,
-    bodies: Query<(&WorldPos, &Appearance)>,
+    bodies: Query<(&WorldPos, &Appearance, Option<&Body>)>,
 ) {
-    let Some(sel) = debug.selected else { return; };
-    let Ok((wp, appearance)) = bodies.get(sel) else { return; };
+    let Some(sel) = debug.selected else {
+        return;
+    };
+    let Ok((wp, appearance, body)) = bodies.get(sel) else {
+        return;
+    };
     let radius = match appearance {
         Appearance::Sphere { radius, .. } => *radius,
-        _ => 50.0,
+        Appearance::Mesh { .. } => body.map_or(50.0, |body| body.radius as f32),
     };
     let center = (wp.0 - cam.0).as_vec3();
     let accent = Color::srgb(1.0, 0.6, 0.1);

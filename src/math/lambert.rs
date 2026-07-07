@@ -1,8 +1,8 @@
-// This is the math used for solving the lamber problem 
+// This is the math used for solving the lamber problem
 // Times and velocities for travelling between bodies
-// is calculated here 
+// is calculated here
 //
-// === See the math at the bottom of the file !=== 
+// === See the math at the bottom of the file !===
 
 use bevy::math::DVec3;
 use std::f64::consts::TAU;
@@ -46,7 +46,7 @@ pub(crate) fn lambert(
     let cos_dnu = (r1.dot(r2) / (r1n * r2n)).clamp(-1.0, 1.0);
 
     // transfer angle Δν, picking the branch from the desired direction
-    // acos -> [0, pi] so must account for other theta 
+    // acos -> [0, pi] so must account for other theta
     let dnu = if prograde == (cross.z >= 0.0) {
         cos_dnu.acos()
     } else {
@@ -112,64 +112,64 @@ pub(crate) fn lambert(
     Some((v1, v2))
 }
 
-// ===== MATH ===== 
-/* 
+// ===== MATH =====
+/*
  *  The universal anomlay χ is defined by dχ/dt = √μ / r
  *      elipsis: χ = √a · ΔE (change in Eccentric Anomoly
  *      hyperbola: χ = √(−a) · ΔF (change in hyperbolic Anomoly)
  *
  *  Let α = 1/a and define  z = α·χ²
- *  Then the sign of z encodes the conic type, 
- *      a > 0 => z > 0 
- *      a < 0 => z < 0 
+ *  Then the sign of z encodes the conic type,
+ *      a > 0 => z > 0
+ *      a < 0 => z < 0
  *      a = infinity => z = 0
  *
  *  Stumpff Functions:
  *      C(z) = Σ_{k≥0} (−z)^k/(2k+2)!  = 1/2 − z/24 + z²/720 − …
  *      S(z) = Σ_{k≥0} (−z)^k/(2k+3)!  = 1/6 − z/120 + z²/5040 − …
- *  Closed form: 
+ *  Closed form:
  *      z>0:  C=(1−cos√z)/z          S=(√z − sin√z)/(√z)³
  *      z<0:  C=(cosh√−z − 1)/(−z)   S=(sinh√−z − √−z)/(√−z)³
  *      z=0:  C=1/2                  S=1/6
  *
- *  For motion over a universal step χ, our state propogates r₂ = f·r₁ + g·v₁ with: 
+ *  For motion over a universal step χ, our state propogates r₂ = f·r₁ + g·v₁ with:
  * f  = 1 − (χ²/r₁)·C(z)
  * g  = Δt − (χ³/√μ)·S(z)
  * ġ  = 1 − (χ²/r₂)·C(z)
  * ḟ  = (√μ/(r₁r₂))·χ·(z·S(z) − 1)
  * ( wronskian law applies, ie: f·ġ − ḟ·g = 1 )
- * 
- * The transfer angle is given by: 
+ *
+ * The transfer angle is given by:
  * cos Δν = (r₁·r₂)/(r₁ r₂)
  *
- * The seed for our iteration will be derived from: 
- * r₁ × r₂ = r₁ × (f·r₁ + g·v₁) = g·(r₁ × v₁) = g·h 
- * Since f·r₁ is dependent with r₁, it vanishes. |r₁×r₂| = r₁r₂sinΔν and 
+ * The seed for our iteration will be derived from:
+ * r₁ × r₂ = r₁ × (f·r₁ + g·v₁) = g·(r₁ × v₁) = g·h
+ * Since f·r₁ is dependent with r₁, it vanishes. |r₁×r₂| = r₁r₂sinΔν and
  * |h| = √(μp), so g = r₁ r₂ sinΔν / √(μp)
  *
  * The geometry collapses to A = sinΔν · √( r₁ r₂ / (1 − cosΔν) )
- * Appluing half angle identity: 
+ * Appluing half angle identity:
  *
- * A = √(2 r₁ r₂) · cos(Δν/2). This is the seed used in the lambert 
+ * A = √(2 r₁ r₂) · cos(Δν/2). This is the seed used in the lambert
  *
- * 
- * Next define y = χ²C(z) and 
+ *
+ * Next define y = χ²C(z) and
  * y(z) = r₁ + r₂ + A·(z·S(z) − 1)/√C(z) implies χ = √( y / C(z) )
  *
- * Central lamber equation: 
- * √μ · Δt = χ³·S(z) + A·√y = (y/C)^{3/2}·S(z) + A·√y and 
+ * Central lamber equation:
+ * √μ · Δt = χ³·S(z) + A·√y = (y/C)^{3/2}·S(z) + A·√y and
  * Δt(z) = [ (y/C)^{3/2}·S(z) + A·√y ] / √μ
  *
  * f = 1 − (χ²/r₁)·C = 1 − y/r₁
  * ġ = 1 − (χ²/r₂)·C = 1 − y/r₂
- * g = A·√(y/μ) 
+ * g = A·√(y/μ)
  *
- * Then r₂ = f·r₁ + g·v₁ implies: 
- * v₁ = (r₂ − f·r₁) 
+ * Then r₂ = f·r₁ + g·v₁ implies:
+ * v₁ = (r₂ − f·r₁)
  *
- * The wronskian implies: 
+ * The wronskian implies:
  * v₂ = (ġ·r₂ − r₁)/g
- * 
+ *
 */
 
 #[cfg(test)]

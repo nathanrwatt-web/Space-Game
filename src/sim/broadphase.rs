@@ -31,7 +31,7 @@ impl FrameSpaceCache {
     }
 }
 
-// insert all bodies into parents cache, grouping siblings 
+// insert all bodies into parents cache, grouping siblings
 pub fn build_frame_cache(
     clock: Res<SimClock>,
     mut cache: ResMut<FrameSpaceCache>,

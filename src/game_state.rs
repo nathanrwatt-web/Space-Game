@@ -1,18 +1,20 @@
-use crate::math::orbital_elements::OrbitalElements;
-use crate::world_pos::WorldPos;
+use crate::assets::{AdditiveNodes, GameAssets, HideSceneNodes};
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
 use crate::edit::HandleTarget;
+use crate::math::orbital_elements::OrbitalElements;
+use crate::sim::clock::SimClock;
 use crate::sim::entity::{SimEntity, SimulationTier};
 use crate::sim::guidance::Guidance;
 use crate::sim::integrate::{Propulsion, StateVec, ThrustCommand};
 use crate::sim::orbit::{Body, Maneuvers, Orbit, OrbitPropagationCache};
-use crate::sim::clock::SimClock;
+use crate::world_pos::WorldPos;
 use crate::worlds::{self, CurrentWorld, WorldMeta};
 
+use bevy::gltf::GltfAssetLabel;
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // main menu, game running
@@ -23,7 +25,7 @@ pub enum AppMode {
     Run,
 }
 
-// AppMode::Run sub branches 
+// AppMode::Run sub branches
 #[derive(SubStates, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[source(AppMode = AppMode::Run)]
 pub enum GameState {
@@ -88,7 +90,10 @@ mod tests {
                 parent: None,
                 orbital_elements: None,
                 world_pos: None,
-                mass: Some(BodyMass { mu: 25.0, radius: 5.0 }),
+                mass: Some(BodyMass {
+                    mu: 25.0,
+                    radius: 5.0,
+                }),
                 focusable: true,
                 tier: SimulationTier::Background,
                 appearance: None,
@@ -130,13 +135,42 @@ mod tests {
         let text = ron::ser::to_string(&motion).expect("serialize");
         let restored: MotionDescription = ron::from_str(&text).expect("deserialize");
         match restored {
-            MotionDescription::Powered { frame, pos, vel, guidance } => {
+            MotionDescription::Powered {
+                frame,
+                pos,
+                vel,
+                guidance,
+            } => {
                 assert_eq!(frame, "Root");
                 assert_eq!(pos, [10.0, 2.0, -1.0]);
                 assert_eq!(vel, [0.5, 1.5, 0.25]);
                 assert!(matches!(guidance, Guidance::Hold));
             }
             other => panic!("expected powered motion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mesh_appearance_deserializes_and_ignores_legacy_source() {
+        // Legacy saved worlds carry a `source:` field that no longer exists; serde must
+        // ignore it so those files keep loading.
+        let appearance: Appearance = ron::from_str(
+            r#"Mesh(path:"Planet.glb",scale:1.0,source:Primitive(mesh:2,primitive:0,material:Some(2)))"#,
+        )
+        .expect("deserialize");
+        match appearance {
+            Appearance::Mesh {
+                path,
+                scale,
+                hide_nodes,
+                additive_nodes,
+            } => {
+                assert_eq!(path, "Planet.glb");
+                assert_eq!(scale, 1.0);
+                assert!(hide_nodes.is_empty());
+                assert!(additive_nodes.is_empty());
+            }
+            other => panic!("expected mesh appearance, got {other:?}"),
         }
     }
 
@@ -150,7 +184,14 @@ mod tests {
         world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
             world.resource_scope(|world, mut materials: Mut<Assets<StandardMaterial>>| {
                 let mut commands = Commands::new(&mut queue, world);
-                spawn_system(&powered_ship_desc(), &mut commands, &mut meshes, &mut materials);
+                spawn_system(
+                    &powered_ship_desc(),
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    None,
+                    None,
+                );
             });
         });
         queue.apply(&mut world);
@@ -162,7 +203,8 @@ mod tests {
             .map(|(entity, _)| entity)
             .expect("root spawned");
 
-        let mut ships = world.query::<(&Name, &StateVec, &Guidance, &Propulsion, &SimulationTier)>();
+        let mut ships =
+            world.query::<(&Name, &StateVec, &Guidance, &Propulsion, &SimulationTier)>();
         let (_, state, guidance, propulsion, tier) = ships
             .iter(&world)
             .find(|(name, ..)| name.as_str() == "Ship")
@@ -182,7 +224,7 @@ mod tests {
 //  name (since entity is reattributed)
 //  parent and orbital elements (to specify the orbit)
 //  optional world_pos for the root body
-//  if the body is focusable 
+//  if the body is focusable
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct BodyDescription {
@@ -190,45 +232,58 @@ pub(crate) struct BodyDescription {
     #[serde(default)]
     pub(crate) motion: Option<MotionDescription>,
     #[serde(default)]
-    pub(crate) parent: Option<String>,            // May be the root
+    pub(crate) parent: Option<String>, // May be the root
     #[serde(default)]
     pub(crate) orbital_elements: Option<OrbitalElements>,
     #[serde(default)]
-    pub(crate) world_pos: Option<WorldPos>,       // May be child with relative position
+    pub(crate) world_pos: Option<WorldPos>, // May be child with relative position
     pub(crate) mass: Option<BodyMass>,
     pub(crate) focusable: bool,
     #[serde(default)]
     pub(crate) tier: SimulationTier,
     #[serde(default)]
     pub(crate) appearance: Option<Appearance>,
-    pub(crate) maneuvers: Option<Maneuvers>,      // Some ⇒ this is a ship (carries its burn queue)
+    pub(crate) maneuvers: Option<Maneuvers>, // Some ⇒ this is a ship (carries its burn queue)
     #[serde(default)]
-    pub(crate) propulsion: Option<Propulsion>,    // Some ⇒ ship has engine 
+    pub(crate) propulsion: Option<Propulsion>, // Some ⇒ ship has engine
 }
 
 impl BodyDescription {
-    // helper for making new BodyDescriptions 
-    pub(crate) fn new(name: String, parent: Option<String>, or_els: Option<[f64; 8]>,
-        world_pos: Option<WorldPos>, m: Option<(f64, f64)>, focusable: bool, appearance: Appearance)  -> Self {
-            Self {
-                name,
-                motion: None,
-                parent, 
-                orbital_elements: or_els.map(|e| OrbitalElements {
-                        a: e[0], e: e[1], i: e[2], lan: e[3],
-                        arg_pe: e[4], m0: e[5], epoch: e[6], mu: e[7],
-                    }),
-                world_pos,
-                mass: match m {
-                    Some((m, r)) => { Some(BodyMass {mu: m, radius: r}) },
-                    _ => None,
-                },
-                focusable,
-                tier: SimulationTier::Rendered,
-                appearance: Some(appearance),
-                maneuvers: None,  // ships are built as struct literals with Some(..)
-                propulsion: None, // ditto — only ships carry propulsion
-            }
+    // helper for making new BodyDescriptions
+    pub(crate) fn new(
+        name: String,
+        parent: Option<String>,
+        or_els: Option<[f64; 8]>,
+        world_pos: Option<WorldPos>,
+        m: Option<(f64, f64)>,
+        focusable: bool,
+        appearance: Appearance,
+    ) -> Self {
+        Self {
+            name,
+            motion: None,
+            parent,
+            orbital_elements: or_els.map(|e| OrbitalElements {
+                a: e[0],
+                e: e[1],
+                i: e[2],
+                lan: e[3],
+                arg_pe: e[4],
+                m0: e[5],
+                epoch: e[6],
+                mu: e[7],
+            }),
+            world_pos,
+            mass: match m {
+                Some((m, r)) => Some(BodyMass { mu: m, radius: r }),
+                _ => None,
+            },
+            focusable,
+            tier: SimulationTier::Rendered,
+            appearance: Some(appearance),
+            maneuvers: None,  // ships are built as struct literals with Some(..)
+            propulsion: None, // ditto — only ships carry propulsion
+        }
     }
 
     fn resolved_motion(&self) -> MotionDescription {
@@ -246,17 +301,17 @@ impl BodyDescription {
         }
     }
 }
-// orbit cam needs: 
-//  Focus entity and point 
-//  orientation 
-//  distance 
-//  last focus and last point *need not be stored 
+// orbit cam needs:
+//  Focus entity and point
+//  orientation
+//  distance
+//  last focus and last point *need not be stored
 //
-//  additionally needs worldpos 
+//  additionally needs worldpos
 #[derive(Serialize, Deserialize)]
 struct CameraDescription {
-    focus_entity: String, 
-    orientation: DQuat, 
+    focus_entity: String,
+    orientation: DQuat,
     distance: f64,
     world_pos: Option<WorldPos>,
 }
@@ -267,10 +322,25 @@ pub(crate) struct BodyMass {
     pub(crate) radius: f64,
 }
 
-#[derive(Component, Serialize, Deserialize, Clone)]
+#[derive(Component, Serialize, Deserialize, Clone, Debug)]
 pub(crate) enum Appearance {
-    Sphere { radius: f32, color: [f32; 3] },
-    Mesh { path: String, scale: f32 },
+    Sphere {
+        radius: f32,
+        color: [f32; 3],
+    },
+    // A GLTF model loaded as a full scene from `assets/<path>`. See `crate::assets`.
+    // `scale` is applied on top of the model's own node transforms. `hide_nodes` lists
+    // GLTF node names (matched as substrings) to strip after spawn, e.g. an unwanted
+    // atmosphere shell. `additive_nodes` lists node names whose material should render
+    // additively, e.g. a grayscale-on-black cloud overlay.
+    Mesh {
+        path: String,
+        scale: f32,
+        #[serde(default)]
+        hide_nodes: Vec<String>,
+        #[serde(default)]
+        additive_nodes: Vec<String>,
+    },
 }
 
 // Tab flips between modes
@@ -288,9 +358,9 @@ pub fn toggle_mode(
     }
     if keys.just_pressed(KeyCode::Escape) {
         next.set(match mode.get() {
-            GameState::Paused => GameState::Running,                      // close menu / resume
+            GameState::Paused => GameState::Running, // close menu / resume
             GameState::Running | GameState::Editing => GameState::Paused, // open menu
-            keep => *keep,                                                // ignore mid load/save
+            keep => *keep,                           // ignore mid load/save
         });
     }
 }
@@ -316,12 +386,13 @@ pub fn despawn_world(
     *orbit_cache = OrbitPropagationCache::default();
 }
 
-
 // OnEnter(Loading): load the current worlds folder seeding a default if it's a new world,
 // spawn it, reconfigure the camera, freeze the clock, then enter Running.
 #[allow(clippy::too_many_arguments)]
 pub fn load_scene(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    game_assets: Res<GameAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut clock: ResMut<SimClock>,
@@ -341,18 +412,31 @@ pub fn load_scene(
     let file: SystemFile = match worlds::read_ron::<SystemFile>(&path) {
         Ok(f) => f,
         Err(e) => {
-            // new world, seed from default 
+            // new world, seed from default
             info!("load '{name}': {e}; seeding default");
             let file = default_system();
             if let Err(e) = worlds::write_ron(&path, &file) {
                 error!("load: couldn't write default world: {e}");
             }
-            worlds::write_ron(&worlds::meta_path(name), &WorldMeta { sim_time: file.sim_time }).ok();
+            worlds::write_ron(
+                &worlds::meta_path(name),
+                &WorldMeta {
+                    sim_time: file.sim_time,
+                },
+            )
+            .ok();
             file
         }
     };
 
-    let by_name = spawn_system(&file.bodies, &mut commands, &mut meshes, &mut materials);
+    let by_name = spawn_system(
+        &file.bodies,
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        Some(&asset_server),
+        Some(&game_assets),
+    );
     clock.t = file.sim_time;
     clock.pause(); // worlds always load frozen (warp 0)
     orbit_cache.dirty = true;
@@ -360,7 +444,10 @@ pub fn load_scene(
     // reconfigure the persistent camera (spawned at Startup) from the saved description
     let (mut orbit_cam, mut cam_wp) = camera.into_inner();
     if let Some(desc) = &file.camera {
-        let focus = by_name.get(&desc.focus_entity).copied().unwrap_or(Entity::PLACEHOLDER);
+        let focus = by_name
+            .get(&desc.focus_entity)
+            .copied()
+            .unwrap_or(Entity::PLACEHOLDER);
         orbit_cam.focus = focus;
         orbit_cam.last_focus = focus;
         orbit_cam.orientation = desc.orientation;
@@ -374,12 +461,14 @@ pub fn load_scene(
 }
 
 // returns hashmap of name of entity -> entity id on Loading
-// handles the commands.spawn initialization 
+// handles the commands.spawn initialization
 pub(crate) fn spawn_system(
     bodies: &[BodyDescription],
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    asset_server: Option<&AssetServer>,
+    game_assets: Option<&GameAssets>,
 ) -> HashMap<String, Entity> {
     let mut by_name: HashMap<String, Entity> = HashMap::new();
 
@@ -399,24 +488,52 @@ pub(crate) fn spawn_system(
         if let Some(appearance) = &body.appearance {
             ec.insert(appearance.clone());
             if body.tier != SimulationTier::Background {
-                let (mesh, material) = match appearance {
-                    Appearance::Sphere { radius, color } => (
-                        meshes.add(Sphere::new(*radius)),
-                        materials.add(Color::srgb(color[0], color[1], color[2])),
-                    ),
-                    Appearance::Mesh { .. } => {
-                        warn!("Appearance::Mesh not handled yet for {}; using a placeholder", body.name);
-                        (meshes.add(Sphere::new(10.0)), materials.add(Color::WHITE))
+                match appearance {
+                    Appearance::Sphere { radius, color } => {
+                        let mesh = meshes.add(Sphere::new(*radius));
+                        let material = materials.add(Color::srgb(color[0], color[1], color[2]));
+                        ec.insert((Mesh3d(mesh), MeshMaterial3d(material), Transform::default()));
                     }
-                };
-                ec.insert((Mesh3d(mesh), MeshMaterial3d(material), Transform::default()));
+                    Appearance::Mesh {
+                        path,
+                        scale,
+                        hide_nodes,
+                        additive_nodes,
+                    } => {
+                        // Prefer the preloaded (warm) handle from the manifest; fall back to
+                        // an on-demand load so assets not listed in PRELOAD_SCENES still work.
+                        let scene = game_assets
+                            .and_then(|a| a.scene(path))
+                            .or_else(|| {
+                                asset_server.map(|s| {
+                                    s.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))
+                                })
+                            });
+                        if let Some(scene) = scene {
+                            ec.insert((
+                                SceneRoot(scene),
+                                Transform::from_scale(Vec3::splat(*scale)),
+                                HideSceneNodes(hide_nodes.clone()),
+                                AdditiveNodes(additive_nodes.clone()),
+                            ));
+                        } else {
+                            warn!(
+                                "Appearance::Mesh for {} needs an AssetServer; skipping visual",
+                                body.name
+                            );
+                        }
+                    }
+                }
             }
         }
         if body.focusable {
             ec.insert(Focusable::default());
         }
         if let Some(m) = &body.mass {
-            ec.insert(Body { mu: m.mu, radius: m.radius });
+            ec.insert(Body {
+                mu: m.mu,
+                radius: m.radius,
+            });
         }
         if let Some(man) = &body.maneuvers {
             ec.insert(man.clone());
@@ -432,7 +549,10 @@ pub(crate) fn spawn_system(
             MotionDescription::Root { world_pos } => {
                 commands.entity(entity).insert(world_pos);
             }
-            MotionDescription::Orbit { parent, orbital_elements } => {
+            MotionDescription::Orbit {
+                parent,
+                orbital_elements,
+            } => {
                 let Some(&parent_entity) = by_name.get(&parent) else {
                     warn!("body {} references unknown parent {}", body.name, parent);
                     continue;
@@ -442,7 +562,12 @@ pub(crate) fn spawn_system(
                     parent: parent_entity,
                 });
             }
-            MotionDescription::Powered { frame, pos, vel, guidance } => {
+            MotionDescription::Powered {
+                frame,
+                pos,
+                vel,
+                guidance,
+            } => {
                 let Some(&frame_entity) = by_name.get(&frame) else {
                     warn!("body {} references unknown frame {}", body.name, frame);
                     continue;
@@ -467,20 +592,23 @@ pub(crate) fn spawn_system(
 pub fn save_scene(
     clock: Res<SimClock>,
     current: Res<CurrentWorld>,
-    bodies: Query<(
-        &Name,
-        &WorldPos,
-        Option<&Orbit>,
-        Option<&StateVec>,
-        Option<&Guidance>,
-        Option<&Body>,
-        Option<&Maneuvers>,
-        Option<&Propulsion>,
-        Option<&Appearance>,
-        Option<&SimulationTier>,
-        Has<Focusable>,
-    ), With<SimEntity>>,
-    names: Query<&Name>,                       // second lookup: parent Entity -> name
+    bodies: Query<
+        (
+            &Name,
+            &WorldPos,
+            Option<&Orbit>,
+            Option<&StateVec>,
+            Option<&Guidance>,
+            Option<&Body>,
+            Option<&Maneuvers>,
+            Option<&Propulsion>,
+            Option<&Appearance>,
+            Option<&SimulationTier>,
+            Has<Focusable>,
+        ),
+        With<SimEntity>,
+    >,
+    names: Query<&Name>, // second lookup: parent Entity -> name
     camera: Single<(&OrbitCam, &WorldPos)>,
     mut next: ResMut<NextState<GameState>>,
 ) {
@@ -491,21 +619,42 @@ pub fn save_scene(
     };
 
     let mut descs = Vec::new();
-    for (name, world_pos, orbit, statevec, guidance, body, maneuvers, propulsion, appearance, tier, focusable) in &bodies {
+    for (
+        name,
+        world_pos,
+        orbit,
+        statevec,
+        guidance,
+        body,
+        maneuvers,
+        propulsion,
+        appearance,
+        tier,
+        focusable,
+    ) in &bodies
+    {
         let motion = if let Some(orbit) = orbit {
-            names.get(orbit.parent).ok().map(|parent_name| MotionDescription::Orbit {
-                parent: parent_name.as_str().to_string(),
-                orbital_elements: orbit.elements,
-            })
+            names
+                .get(orbit.parent)
+                .ok()
+                .map(|parent_name| MotionDescription::Orbit {
+                    parent: parent_name.as_str().to_string(),
+                    orbital_elements: orbit.elements,
+                })
         } else if let Some(statevec) = statevec {
-            names.get(statevec.frame).ok().map(|frame_name| MotionDescription::Powered {
-                frame: frame_name.as_str().to_string(),
-                pos: vec3_to_array(statevec.pos),
-                vel: vec3_to_array(statevec.vel),
-                guidance: guidance.copied().unwrap_or_default(),
-            })
+            names
+                .get(statevec.frame)
+                .ok()
+                .map(|frame_name| MotionDescription::Powered {
+                    frame: frame_name.as_str().to_string(),
+                    pos: vec3_to_array(statevec.pos),
+                    vel: vec3_to_array(statevec.vel),
+                    guidance: guidance.copied().unwrap_or_default(),
+                })
         } else {
-            Some(MotionDescription::Root { world_pos: *world_pos })
+            Some(MotionDescription::Root {
+                world_pos: *world_pos,
+            })
         };
 
         descs.push(BodyDescription {
@@ -514,7 +663,10 @@ pub fn save_scene(
             parent: None,
             orbital_elements: None,
             world_pos: None,
-            mass: body.map(|b| BodyMass { mu: b.mu, radius: b.radius }),
+            mass: body.map(|b| BodyMass {
+                mu: b.mu,
+                radius: b.radius,
+            }),
             focusable,
             tier: tier.copied().unwrap_or_default(),
             appearance: appearance.cloned(),
@@ -528,7 +680,10 @@ pub fn save_scene(
         sim_time: clock.t,
         bodies: descs,
         camera: Some(CameraDescription {
-            focus_entity: names.get(orbit_cam.focus).map(|n| n.as_str().to_string()).unwrap_or_default(),
+            focus_entity: names
+                .get(orbit_cam.focus)
+                .map(|n| n.as_str().to_string())
+                .unwrap_or_default(),
             orientation: orbit_cam.orientation,
             distance: orbit_cam.distance,
             world_pos: Some(*cam_wp),
@@ -537,7 +692,13 @@ pub fn save_scene(
 
     match worlds::write_ron(&worlds::system_path(name), &file) {
         Ok(()) => {
-            worlds::write_ron(&worlds::meta_path(name), &WorldMeta { sim_time: file.sim_time }).ok();
+            worlds::write_ron(
+                &worlds::meta_path(name),
+                &WorldMeta {
+                    sim_time: file.sim_time,
+                },
+            )
+            .ok();
             info!("saved {} bodies to world '{name}'", file.bodies.len());
         }
         Err(e) => error!("save: write failed: {e}"),
@@ -546,8 +707,7 @@ pub fn save_scene(
     next.set(GameState::Paused);
 }
 
-
-// default setup 
+// default setup
 fn default_system() -> SystemFile {
     // Scaled-up Jupiter system
     let jupiter_mu = 126_687.0; // 126.687 × 1000
@@ -562,33 +722,71 @@ fn default_system() -> SystemFile {
         bodies: vec![
             // root: no parent, no orbit, pinned at the origin
             BodyDescription::new(
-                "Jupiter".into(), None, None,
-                Some(WorldPos::ORIGIN), Some((jupiter_mu, 6990.0)), true,
-                Appearance::Sphere { radius: 6990.0, color: [0.80, 0.60, 0.40] },
+                "Jupiter".into(),
+                None,
+                None,
+                Some(WorldPos::ORIGIN),
+                Some((jupiter_mu, 6990.0)),
+                true,
+                Appearance::Mesh {
+                    path: "Planet.glb".into(),
+                    // Planet.glb's `planet` node already scales its unit sphere up ~22x
+                    // internally, so divide the target radius by that to hit 6990.
+                    scale: 6990.0 / 22.0,
+                    // The `planet atmo` shell is an untextured opaque-white sphere; drop it.
+                    hide_nodes: vec!["planet atmo".into()],
+                    // `planet cloud` is white clouds on black with no alpha; render it
+                    // additively so the orange surface shows through the gaps.
+                    additive_nodes: vec!["planet cloud".into()],
+                },
             ),
             BodyDescription::new(
-                "Io".into(), Some("Jupiter".into()),
+                "Io".into(),
+                Some("Jupiter".into()),
                 Some([42180.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, jupiter_mu]),
-                None, Some((5.96 * 2.0, 364.0)), true,
-                Appearance::Sphere { radius: 364.0, color: [0.90, 0.85, 0.40] },
+                None,
+                Some((5.96 * 2.0, 364.0)),
+                true,
+                Appearance::Sphere {
+                    radius: 364.0,
+                    color: [0.90, 0.85, 0.40],
+                },
             ),
             BodyDescription::new(
-                "Europa".into(), Some("Jupiter".into()),
+                "Europa".into(),
+                Some("Jupiter".into()),
                 Some([67110.0, 0.0, 0.0, 0.0, 0.0, 2.5, 0.0, jupiter_mu]),
-                None, Some((3.20 * 2.0, 312.0)), true,
-                Appearance::Sphere { radius: 312.0, color: [0.85, 0.85, 0.90] },
+                None,
+                Some((3.20 * 2.0, 312.0)),
+                true,
+                Appearance::Sphere {
+                    radius: 312.0,
+                    color: [0.85, 0.85, 0.90],
+                },
             ),
             BodyDescription::new(
-                "Ganymede".into(), Some("Jupiter".into()),
+                "Ganymede".into(),
+                Some("Jupiter".into()),
                 Some([107040.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, jupiter_mu]),
-                None, Some((9.89 * 2.0, 526.0)), true,
-                Appearance::Sphere { radius: 526.0, color: [0.60, 0.55, 0.50] },
+                None,
+                Some((9.89 * 2.0, 526.0)),
+                true,
+                Appearance::Sphere {
+                    radius: 526.0,
+                    color: [0.60, 0.55, 0.50],
+                },
             ),
             BodyDescription::new(
-                "Callisto".into(), Some("Jupiter".into()),
+                "Callisto".into(),
+                Some("Jupiter".into()),
                 Some([188270.0, 0.0, 0.0, 0.0, 0.0, 5.5, 0.0, jupiter_mu]),
-                None, Some((7.18 * 2.0, 482.0)), true,
-                Appearance::Sphere { radius: 482.0, color: [0.40, 0.40, 0.45] },
+                None,
+                Some((7.18 * 2.0, 482.0)),
+                true,
+                Appearance::Sphere {
+                    radius: 482.0,
+                    color: [0.40, 0.40, 0.45],
+                },
             ),
             // ship: massless, on rails around Jupiter, marked by Some(maneuvers).
             // radius kept small (≈ 1/140 of Jupiter) for a realistic ratio; visible when zoomed in.
@@ -597,17 +795,29 @@ fn default_system() -> SystemFile {
                 motion: None,
                 parent: Some("Jupiter".into()),
                 orbital_elements: Some(OrbitalElements {
-                    a: 30000.0, e: 0.0, i: 0.0, lan: 0.0,
-                    arg_pe: 0.0, m0: 0.0, epoch: 0.0, mu: jupiter_mu,
+                    a: 30000.0,
+                    e: 0.0,
+                    i: 0.0,
+                    lan: 0.0,
+                    arg_pe: 0.0,
+                    m0: 0.0,
+                    epoch: 0.0,
+                    mu: jupiter_mu,
                 }),
                 world_pos: None,
                 mass: None,
                 focusable: true,
                 tier: SimulationTier::Rendered,
-                appearance: Some(Appearance::Sphere { radius: 50.0, color: [1.0, 0.3, 0.3] }),
+                appearance: Some(Appearance::Sphere {
+                    radius: 50.0,
+                    color: [1.0, 0.3, 0.3],
+                }),
                 maneuvers: Some(Maneuvers::default()),
                 // engines: max_accel ≫ local gravity (μ/r² ≈ 1.4e-4 at this orbit) so Hold/StationKeep have authority
-                propulsion: Some(Propulsion { max_accel: 0.1, throttle: 1.0 }),
+                propulsion: Some(Propulsion {
+                    max_accel: 0.1,
+                    throttle: 1.0,
+                }),
             },
         ],
     }

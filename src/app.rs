@@ -4,37 +4,41 @@
 use bevy::{math::DQuat, prelude::*};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 
-use crate::camera::{OrbitCam, orbit_camera, focus_on_click};
-use crate::edit::{spawn_handles, position_handles, drag_handle, run_handle_target, HandleTarget};
+use crate::camera::{OrbitCam, focus_on_click, orbit_camera};
+use crate::debug::{DebugUi, debug_cam_inactive, debug_camera, debug_is_open};
+use crate::edit::{HandleTarget, drag_handle, position_handles, run_handle_target, spawn_handles};
+use crate::game_state::{
+    AppMode, GameState, despawn_world, load_scene, not_menu, save_scene, toggle_mode,
+};
 use crate::log_capture::{LogWindow, log_panel};
-use crate::sim::orbit::{draw_orbits, execute_maneuvers, propagate_orbits, OrbitPropagationCache};
+use crate::menu::{pause_menu, start_screen};
+use crate::ship_control::{
+    MoveOrderEvent, TransferOrderEvent, apply_move_orders, apply_transfer_orders, queue_ship_orders,
+};
+use crate::sim::orbit::{OrbitPropagationCache, draw_orbits, execute_maneuvers, propagate_orbits};
 use crate::sim::{
-    soi::{draw_soi, update_soi},
-    clock::{SimClock, warp_keys, advance_clock, clamp_warp},
+    broadphase::{FrameSpaceCache, build_frame_cache},
     capture::execute_capture,
+    clock::{SimClock, advance_clock, clamp_warp, warp_keys},
     integrate::{PhysAccumulator, integrate_powered},
-    broadphase::{build_frame_cache, FrameSpaceCache},
+    soi::{draw_soi, update_soi},
 };
 use crate::world_pos::WorldPos;
-use crate::debug::{DebugUi, debug_is_open, debug_camera, debug_cam_inactive};
-use crate::game_state::{AppMode, GameState, not_menu, load_scene, save_scene, toggle_mode, despawn_world};
-use crate::menu::{start_screen, pause_menu};
 use crate::worlds::CurrentWorld;
-use crate::ship_control::{MoveOrderEvent, TransferOrderEvent, apply_move_orders, apply_transfer_orders, queue_ship_orders};
 
 // Ordered gameplay pipeline. Systems keep their own run conditions
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum GameSet {
-    Time,        // warp input + clock advance
-    Orders,      // input orders translated into sim actions
-    Maneuver,    // impulsive burns
-    FrameCache,  // rebuild the sibling cache for frame-local lookups
-    Soi,         // sphere-of-influence transitions
-    Capture,     // scheduled orbital insertions
-    Integrate,   // numerical integration of powered craft
-    Propagate,   // analytic positions from orbits (Run AND Edit)
-    Camera,      // camera follow + focus
-    Draw,        // debug gizmos (orbits, SOI)
+    Time,       // warp input + clock advance
+    Orders,     // input orders translated into sim actions
+    Maneuver,   // impulsive burns
+    FrameCache, // rebuild the sibling cache for frame-local lookups
+    Soi,        // sphere-of-influence transitions
+    Capture,    // scheduled orbital insertions
+    Integrate,  // numerical integration of powered craft
+    Propagate,  // analytic positions from orbits (Run AND Edit)
+    Camera,     // camera follow + focus
+    Draw,       // debug gizmos (orbits, SOI)
 }
 
 // ===== World / state lifecycle =====
@@ -60,33 +64,58 @@ pub struct SimPlugin;
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app
-        // time keeping resource
-        .init_resource::<SimClock>()
-        // for numerical integation (Any where N-body or constant thrust)
-        .init_resource::<PhysAccumulator>()
-        .init_resource::<OrbitPropagationCache>()
-        .init_resource::<FrameSpaceCache>()
-        // the ordered gameplay pipeline; members carry their own run conditions
-        .configure_sets(Update, (
-                GameSet::Time, GameSet::Orders, GameSet::Maneuver, GameSet::FrameCache, GameSet::Soi,
-                GameSet::Capture, GameSet::Integrate, GameSet::Propagate,
-                GameSet::Camera, GameSet::Draw,
-            ).chain())
-        // gameplay mutation only happens while the simulation is actively running
-        .add_systems(Update, (
-                warp_keys.in_set(GameSet::Time),
-                clamp_warp.in_set(GameSet::Time).before(advance_clock),
-                advance_clock.in_set(GameSet::Time),
-                execute_maneuvers.in_set(GameSet::Maneuver),
-                build_frame_cache.in_set(GameSet::FrameCache),
-                update_soi.in_set(GameSet::Soi),
-                execute_capture.in_set(GameSet::Capture),
-                integrate_powered.in_set(GameSet::Integrate),
-            ).run_if(in_state(GameState::Running)))
-        // positions are still propagated while paused/editing so inspection stays correct
-        .add_systems(Update, propagate_orbits.in_set(GameSet::Propagate).run_if(not_menu))
-        // draw orbits and soi helper gizmos (when the debug inspector is open)
-        .add_systems(Update, (draw_orbits, draw_soi).chain().in_set(GameSet::Draw).run_if(debug_is_open).run_if(not_menu));
+            // time keeping resource
+            .init_resource::<SimClock>()
+            // for numerical integation (Any where N-body or constant thrust)
+            .init_resource::<PhysAccumulator>()
+            .init_resource::<OrbitPropagationCache>()
+            .init_resource::<FrameSpaceCache>()
+            // the ordered gameplay pipeline; members carry their own run conditions
+            .configure_sets(
+                Update,
+                (
+                    GameSet::Time,
+                    GameSet::Orders,
+                    GameSet::Maneuver,
+                    GameSet::FrameCache,
+                    GameSet::Soi,
+                    GameSet::Capture,
+                    GameSet::Integrate,
+                    GameSet::Propagate,
+                    GameSet::Camera,
+                    GameSet::Draw,
+                )
+                    .chain(),
+            )
+            // gameplay mutation only happens while the simulation is actively running
+            .add_systems(
+                Update,
+                (
+                    warp_keys.in_set(GameSet::Time),
+                    clamp_warp.in_set(GameSet::Time).before(advance_clock),
+                    advance_clock.in_set(GameSet::Time),
+                    execute_maneuvers.in_set(GameSet::Maneuver),
+                    build_frame_cache.in_set(GameSet::FrameCache),
+                    update_soi.in_set(GameSet::Soi),
+                    execute_capture.in_set(GameSet::Capture),
+                    integrate_powered.in_set(GameSet::Integrate),
+                )
+                    .run_if(in_state(GameState::Running)),
+            )
+            // positions are still propagated while paused/editing so inspection stays correct
+            .add_systems(
+                Update,
+                propagate_orbits.in_set(GameSet::Propagate).run_if(not_menu),
+            )
+            // draw orbits and soi helper gizmos (when the debug inspector is open)
+            .add_systems(
+                Update,
+                (draw_orbits, draw_soi)
+                    .chain()
+                    .in_set(GameSet::Draw)
+                    .run_if(debug_is_open)
+                    .run_if(not_menu),
+            );
     }
 }
 
@@ -94,22 +123,27 @@ impl Plugin for SimPlugin {
 pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app
-        .add_systems(Startup, (setup, configure_gizmos))
-        // focus requests are consumed just before the camera follows them
-        // skipped while the free-flight debug camera has control of the entity
-        .add_systems(Update, (
-                apply_focus_request.before(orbit_camera),
-                orbit_camera,
-            ).in_set(GameSet::Camera).run_if(in_state(AppMode::Run)).run_if(debug_cam_inactive))
-        // after all the position udpates, render it to the screen (any non-menu mode).
-        // MUST run before transform propagation, or the GlobalTransform used for rendering
-        // is one frame stale — which looks like the world lagging/skipping when the camera moves.
-        .add_systems(PostUpdate, sync_render_space
-            .before(TransformSystems::Propagate)
-            .run_if(not_menu))
-        // primary click on Focusable bodies
-        .add_observer(focus_on_click);
+        app.add_systems(Startup, (setup, configure_gizmos))
+            // focus requests are consumed just before the camera follows them
+            // skipped while the free-flight debug camera has control of the entity
+            .add_systems(
+                Update,
+                (apply_focus_request.before(orbit_camera), orbit_camera)
+                    .in_set(GameSet::Camera)
+                    .run_if(in_state(AppMode::Run))
+                    .run_if(debug_cam_inactive),
+            )
+            // after all the position udpates, render it to the screen (any non-menu mode).
+            // MUST run before transform propagation, or the GlobalTransform used for rendering
+            // is one frame stale — which looks like the world lagging/skipping when the camera moves.
+            .add_systems(
+                PostUpdate,
+                sync_render_space
+                    .before(TransformSystems::Propagate)
+                    .run_if(not_menu),
+            )
+            // primary click on Focusable bodies
+            .add_observer(focus_on_click);
     }
 }
 
@@ -117,16 +151,23 @@ impl Plugin for CameraPlugin {
 pub struct ShipControlPlugin;
 impl Plugin for ShipControlPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .add_message::<MoveOrderEvent>()
+        app.add_message::<MoveOrderEvent>()
             .add_message::<TransferOrderEvent>()
             // only run ship orders if game is running
-            .add_systems(Update, queue_ship_orders.in_set(GameSet::Orders).run_if(in_state(GameState::Running)))
+            .add_systems(
+                Update,
+                queue_ship_orders
+                    .in_set(GameSet::Orders)
+                    .run_if(in_state(GameState::Running)),
+            )
             // if game running apply move orders -> apply body transfer
-            .add_systems(Update, (
-                    apply_move_orders,
-                    apply_transfer_orders,
-                ).chain().in_set(GameSet::Orders).run_if(in_state(GameState::Running)));
+            .add_systems(
+                Update,
+                (apply_move_orders, apply_transfer_orders)
+                    .chain()
+                    .in_set(GameSet::Orders)
+                    .run_if(in_state(GameState::Running)),
+            );
     }
 }
 
@@ -134,15 +175,17 @@ impl Plugin for ShipControlPlugin {
 pub struct EditHandlePlugin;
 impl Plugin for EditHandlePlugin {
     fn build(&self, app: &mut App) {
-        app
-        .init_resource::<HandleTarget>()
-        .add_systems(Startup, spawn_handles)
-        // Run path: drive the orbit-gizmo target from the debug selection
-        .add_systems(Update, run_handle_target.run_if(in_state(AppMode::Run)))
-        // orbit-edit handles: self-gated via HandleTarget, after whichever camera updates
-        .add_systems(Update, position_handles.after(orbit_camera).after(debug_camera))
-        // drag edit handles to modify orbit
-        .add_observer(drag_handle);
+        app.init_resource::<HandleTarget>()
+            .add_systems(Startup, spawn_handles)
+            // Run path: drive the orbit-gizmo target from the debug selection
+            .add_systems(Update, run_handle_target.run_if(in_state(AppMode::Run)))
+            // orbit-edit handles: self-gated via HandleTarget, after whichever camera updates
+            .add_systems(
+                Update,
+                position_handles.after(orbit_camera).after(debug_camera),
+            )
+            // drag edit handles to modify orbit
+            .add_observer(drag_handle);
     }
 }
 
@@ -150,36 +193,45 @@ impl Plugin for EditHandlePlugin {
 pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app
-        .add_plugins(EguiPlugin::default())
-        // info!() mirror
-        .init_resource::<LogWindow>()
-        // input + GUI systems
-        .add_systems(Update, toggle_mode.run_if(in_state(AppMode::Run)))
-        .add_systems(EguiPrimaryContextPass, (
-                // the log is a debug tool: only while the F1 overlay is up, toggled from its toolbar
-                log_panel.run_if(in_state(AppMode::Run)).run_if(debug_is_open),
-                start_screen.run_if(in_state(AppMode::Menu)),
-                pause_menu.run_if(in_state(GameState::Paused)),
-            ));
+        app.add_plugins(EguiPlugin::default())
+            // info!() mirror
+            .init_resource::<LogWindow>()
+            // input + GUI systems
+            .add_systems(Update, toggle_mode.run_if(in_state(AppMode::Run)))
+            .add_systems(
+                EguiPrimaryContextPass,
+                (
+                    // the log is a debug tool: only while the F1 overlay is up, toggled from its toolbar
+                    log_panel
+                        .run_if(in_state(AppMode::Run))
+                        .run_if(debug_is_open),
+                    start_screen.run_if(in_state(AppMode::Menu)),
+                    pause_menu.run_if(in_state(GameState::Paused)),
+                ),
+            );
     }
 }
 
 // summons light + camera only, the rest of loading is handed to
 // the world load_scene system
-fn setup(
-    mut commands: Commands,
-) {
+fn setup(mut commands: Commands) {
     // sun shines parallel from far away
-    commands.spawn((DirectionalLight {
-        illuminance: 8000.0,
-        shadows_enabled: false,
-        ..default() },
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 8000.0,
+            shadows_enabled: false,
+            ..default()
+        },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, 0.5, 0.0)),
     ));
 
     commands.spawn((
         Camera3d::default(),
+        // lift the shadowed side so bodies aren't pure black away from the sun
+        AmbientLight {
+            brightness: 400.0,
+            ..default()
+        },
         Transform::default(),
         WorldPos::new(0.0, 10000.0, 25000.0),
         OrbitCam {
@@ -200,15 +252,20 @@ fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
 }
 
 // translate f64 math to f32 for rendering
-fn sync_render_space( camera: Single<&WorldPos, With<Camera>>, mut bodies: Query<(&WorldPos, &mut Transform)>, ) {
-    let origin = **camera;                              // the camera's f64 position
+fn sync_render_space(
+    camera: Single<&WorldPos, With<Camera>>,
+    mut bodies: Query<(&WorldPos, &mut Transform)>,
+) {
+    let origin = **camera; // the camera's f64 position
     for (pos, mut transform) in &mut bodies {
         transform.translation = pos.to_render_space(origin); // subtract in f64, then cast
     }
 }
 
-fn apply_focus_request(mut ui: ResMut<DebugUi>, mut cam: Single<&mut OrbitCam, With<Camera>>,) {
-    let Some(e) = ui.focus_request.take() else { return; };  // consume once
+fn apply_focus_request(mut ui: ResMut<DebugUi>, mut cam: Single<&mut OrbitCam, With<Camera>>) {
+    let Some(e) = ui.focus_request.take() else {
+        return;
+    }; // consume once
     cam.focus = e;
 }
 
@@ -217,14 +274,14 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    use bevy::math::DVec3;
     use bevy::ecs::system::RunSystemOnce;
+    use bevy::math::DVec3;
 
+    use crate::math::orbital_elements::OrbitalElements;
     use crate::sim::entity::{SimEntity, SimulationTier};
-    use crate::sim::guidance::{hold, move_to, station_keep, Guidance};
+    use crate::sim::guidance::{Guidance, hold, move_to, station_keep};
     use crate::sim::integrate::{Propulsion, StateVec, ThrustCommand};
     use crate::sim::orbit::{Body, Maneuvers, Orbit};
-    use crate::math::orbital_elements::OrbitalElements;
 
     const ROOT_MU: f64 = 1.267e17;
 

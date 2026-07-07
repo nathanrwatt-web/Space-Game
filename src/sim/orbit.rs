@@ -1,19 +1,19 @@
-use bevy::prelude::*;
 use bevy::math::DVec3;
+use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
+use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::clock::SimClock;
 use crate::sim::entity::SimEntity;
-use crate::world_pos::WorldPos;
-use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::integrate::StateVec;
+use crate::world_pos::WorldPos;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
 
-#[derive(Component)] 
+#[derive(Component)]
 pub struct Orbit {
-    pub(crate) elements: OrbitalElements, // math of the specific orbit 
-    pub(crate) parent: Entity, // id of what it orbits 
+    pub(crate) elements: OrbitalElements, // math of the specific orbit
+    pub(crate) parent: Entity,            // id of what it orbits
 }
 
 impl Orbit {
@@ -46,7 +46,11 @@ impl Orbit {
             tang.normalize()
         } else {
             // no tangential motion: pick an arbitrary perpendicular for a sane plane
-            let axis = if r_hat.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+            let axis = if r_hat.z.abs() < 0.9 {
+                DVec3::Z
+            } else {
+                DVec3::X
+            };
             r_hat.cross(axis).normalize()
         };
         Self {
@@ -59,7 +63,7 @@ impl Orbit {
 #[derive(Component, Default, Clone, Serialize, Deserialize)]
 pub struct Burn {
     pub execute_at: f64, // time to fire
-    pub dv: DVec3, // velocity change
+    pub dv: DVec3,       // velocity change
 }
 
 #[derive(Component, Default, Clone, Serialize, Deserialize)]
@@ -119,7 +123,9 @@ pub fn propagate_orbits(
 
     for idx in 0..cache.order.len() {
         let entity = cache.order[idx];
-        let Ok((_, orbit)) = orbiters.get(entity) else { continue };
+        let Ok((_, orbit)) = orbiters.get(entity) else {
+            continue;
+        };
         let (local_pos, local_vel) = orbit.elements.state_vectors_at(t);
         let (parent_pos, parent_vel) = cache
             .states
@@ -159,12 +165,14 @@ pub fn draw_orbits(
     let cam = **camera; // worldpos of camera 
 
     for orbit in &orbits {
-        let Ok(parent_wp) = bodies.get(orbit.parent) else { continue; };
+        let Ok(parent_wp) = bodies.get(orbit.parent) else {
+            continue;
+        };
         let parent_pos = parent_wp.0;
         let elements = &orbit.elements;
         let color = Color::srgb(0.35, 0.35, 0.4);
-    
-        // if circle or elipse 
+
+        // if circle or elipse
         if elements.e < 1.0 {
             let period = elements.period();
             let points = (0..SEGMENTS).map(|i| {
@@ -173,8 +181,8 @@ pub fn draw_orbits(
                 WorldPos(world).to_render_space(cam)
             });
             gizmos.lineloop(points, color);
-        } else { 
-            // open hyperbola, go between asymptotes 
+        } else {
+            // open hyperbola, go between asymptotes
             let nu_max = (-1.0 / elements.e).acos() * 0.98;
             let points = (0..=SEGMENTS).map(|i| {
                 let nu = -nu_max + 2.0 * nu_max * i as f64 / SEGMENTS as f64;
@@ -186,12 +194,13 @@ pub fn draw_orbits(
 }
 
 // for the current time, while there is still a scheduled burn, do it
-pub fn execute_maneuvers(
-    clock: Res<SimClock>,
-    mut ships: Query<(&mut Orbit, &mut Maneuvers)>,
-) {
+pub fn execute_maneuvers(clock: Res<SimClock>, mut ships: Query<(&mut Orbit, &mut Maneuvers)>) {
     for (mut orbit, mut maneuvers) in &mut ships {
-        while maneuvers.queue.front().is_some_and(|b| b.execute_at <= clock.t) {
+        while maneuvers
+            .queue
+            .front()
+            .is_some_and(|b| b.execute_at <= clock.t)
+        {
             let burn = maneuvers.queue.pop_front().unwrap();
             orbit.elements = orbit.elements.with_burn(burn.execute_at, burn.dv);
         }
@@ -229,7 +238,9 @@ fn push_children(
     order: &mut Vec<Entity>,
     seen: &mut HashSet<Entity>,
 ) {
-    let Some(entries) = children.get(&parent) else { return };
+    let Some(entries) = children.get(&parent) else {
+        return;
+    };
     for &child in entries {
         if seen.insert(child) {
             order.push(child);
@@ -249,14 +260,24 @@ mod tests {
         // after Hold the velocity is ~0 (no real orbit); park must circularize so the
         // ship exits to a clean, flyable orbit instead of a degenerate plunge.
         let (body_radius, r) = (7.0e6, 1.0e7);
-        let sv = StateVec { pos: DVec3::new(r, 0.0, 0.0), vel: DVec3::ZERO, frame: Entity::PLACEHOLDER };
+        let sv = StateVec {
+            pos: DVec3::new(r, 0.0, 0.0),
+            vel: DVec3::ZERO,
+            frame: Entity::PLACEHOLDER,
+        };
         let el = Orbit::park_from_statevec(&sv, MU, body_radius, 0.0).elements;
 
         assert!(el.e < 1e-3, "should be ~circular, e = {}", el.e);
-        assert!(el.a * (1.0 - el.e) > body_radius, "periapsis below the body");
+        assert!(
+            el.a * (1.0 - el.e) > body_radius,
+            "periapsis below the body"
+        );
         for k in 0..8 {
             let p = el.offset_at(el.period() * k as f64 / 8.0);
-            assert!(p.is_finite() && (p.length() - r).abs() / r < 1e-3, "bad point {p:?}");
+            assert!(
+                p.is_finite() && (p.length() - r).abs() / r < 1e-3,
+                "bad point {p:?}"
+            );
         }
     }
 
@@ -272,6 +293,9 @@ mod tests {
         };
         let el = Orbit::park_from_statevec(&sv, MU, 1.0e6, 0.0).elements;
         let (_, v) = el.state_vectors_at(0.0);
-        assert!((v.length() - vc * 0.95).abs() / (vc * 0.95) < 1e-6, "good orbit was altered");
+        assert!(
+            (v.length() - vc * 0.95).abs() / (vc * 0.95) < 1e-6,
+            "good orbit was altered"
+        );
     }
 }

@@ -1,7 +1,6 @@
 use bevy::prelude::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-// to be used when a body is Focusable by the camera 
+// to be used when a body is Focusable by the camera
 #[derive(Component, Default, Serialize, Deserialize)]
-pub struct Focusable {
-}
+pub struct Focusable {}

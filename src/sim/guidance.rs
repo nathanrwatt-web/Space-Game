@@ -1,16 +1,13 @@
-use bevy::prelude::*;
 use bevy::math::DVec3;
+use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::sim::{
-    orbit::Orbit,
-    integrate::StateVec,
-};
+use crate::sim::{integrate::StateVec, orbit::Orbit};
 
 pub(crate) const CTRL_W: f64 = 0.1;
 
-// TODO: Allow for greater escape velocity but add perpendicular acceleration from this budget 
-// or else add angular velocity to stop escape. 
+// TODO: Allow for greater escape velocity but add perpendicular acceleration from this budget
+// or else add angular velocity to stop escape.
 
 // Cruise scales with local circular speed and is kept
 // BELOW escape velocity (√2 · v_circ ≈ 1.414 · v_circ) so the craft stays gravitationally
@@ -19,23 +16,31 @@ const MOVE_CRUISE_FACTOR: f64 = 1.2;
 const ARRIVE_EPS: f64 = 1.0;
 
 #[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub enum Guidance{
+pub enum Guidance {
     #[default]
-    Idle, 
+    Idle,
     Hold,
-    StationKeep { radius: f64 },
-    Seek { target: Entity },
-    MoveTo { target: DVec3 }, // RTS move order: glide to a point on the shell (frame-local)
+    StationKeep {
+        radius: f64,
+    },
+    Seek {
+        target: Entity,
+    },
+    MoveTo {
+        target: DVec3,
+    }, // RTS move order: glide to a point on the shell (frame-local)
 }
 
 // hold a fixed distance from the fame body
 pub(crate) fn station_keep(pos: DVec3, vel: DVec3, mu: f64, radius: f64) -> DVec3 {
     let r = pos.length();
-    if r < 1.0 { return DVec3::ZERO; }
+    if r < 1.0 {
+        return DVec3::ZERO;
+    }
     let r_hat = pos / r; // direction of position 
     let v_r = vel.dot(r_hat); // directional derivative
     // length^2 of the component of velocity not in the direction of pos
-    let v_tan2 = (vel - v_r * r_hat).length_squared(); 
+    let v_tan2 = (vel - v_r * r_hat).length_squared();
     //r¨ = v_tan²/r - μ/r² + a_thrust
     //since r¨ = 0, we have
     let a_thrust = mu / (r * r) - v_tan2 / r;
@@ -47,15 +52,17 @@ pub(crate) fn station_keep(pos: DVec3, vel: DVec3, mu: f64, radius: f64) -> DVec
 // Hover at current pos, possible if max_accel exceeds gravity
 pub(crate) fn hold(pos: DVec3, vel: DVec3, mu: f64) -> DVec3 {
     let r = pos.length();
-    if r < 1.0 { return DVec3::ZERO; }
-    // gravity is -μ/r² r_hat, so canvel this out 
+    if r < 1.0 {
+        return DVec3::ZERO;
+    }
+    // gravity is -μ/r² r_hat, so canvel this out
     (mu / (r * r)) * (pos / r) - (2.0 * CTRL_W) * vel
 }
 
-// pursuit towards a target position 
+// pursuit towards a target position
 #[allow(dead_code)]
 pub(crate) fn seek(pos: DVec3, vel: DVec3, target_pos: DVec3, target_vel: DVec3) -> DVec3 {
-    let rel = target_pos - pos; 
+    let rel = target_pos - pos;
     let rel_v = target_vel - vel;
     // ω² rel + 2ω rel_v
     CTRL_W * CTRL_W * rel + 2.0 * CTRL_W * rel_v
@@ -68,7 +75,9 @@ pub(crate) fn seek(pos: DVec3, vel: DVec3, target_pos: DVec3, target_vel: DVec3)
 // the planet mid-route. `max_accel` sizes the kinematic braking distance.
 pub(crate) fn move_to(pos: DVec3, vel: DVec3, mu: f64, target: DVec3, max_accel: f64) -> DVec3 {
     let r = pos.length();
-    if r < 1.0 { return DVec3::ZERO; }
+    if r < 1.0 {
+        return DVec3::ZERO;
+    }
     let r_hat = pos / r;
     let shell = target.length();
     let v_r = vel.dot(r_hat);
@@ -102,22 +111,33 @@ pub(crate) fn move_to(pos: DVec3, vel: DVec3, mu: f64, target: DVec3, max_accel:
     let rem = (max_accel * max_accel - rt * rt).max(0.0).sqrt();
     let a_tan = {
         let m = a_tan.length();
-        if m > rem && m > 0.0 { a_tan * (rem / m) } else { a_tan }
+        if m > rem && m > 0.0 {
+            a_tan * (rem / m)
+        } else {
+            a_tan
+        }
     };
 
     rt * r_hat + a_tan
 }
 
-// targets (pos, vel) in frames local coords 
+// targets (pos, vel) in frames local coords
 #[allow(dead_code)]
 pub(crate) fn target_local_state(
-    target: Entity, frame: Entity, t: f64, 
-    statevecs: &Query<&StateVec>, orbits: &Query<&Orbit>,
+    target: Entity,
+    frame: Entity,
+    t: f64,
+    statevecs: &Query<&StateVec>,
+    orbits: &Query<&Orbit>,
 ) -> Option<(DVec3, DVec3)> {
-    if let Ok(tsv) = statevecs.get(target) && tsv.frame == frame {
+    if let Ok(tsv) = statevecs.get(target)
+        && tsv.frame == frame
+    {
         return Some((tsv.pos, tsv.vel));
     }
-    if let Ok(to) = orbits.get(target) && to.parent == frame {
+    if let Ok(to) = orbits.get(target)
+        && to.parent == frame
+    {
         return Some(to.elements.state_vectors_at(t));
     }
     None
@@ -126,7 +146,7 @@ pub(crate) fn target_local_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::integrate::{verlet_step, GravitySource};
+    use crate::sim::integrate::{GravitySource, verlet_step};
 
     const MU: f64 = 7.0e12;
     const RAD: f64 = 2.0e6;
@@ -136,12 +156,20 @@ mod tests {
         let m = a.length();
         if m > lim { a * (lim / m) } else { a }
     }
-    fn src() -> [GravitySource; 1] { [GravitySource { mu: MU, pos: DVec3::ZERO }] }
+    fn src() -> [GravitySource; 1] {
+        [GravitySource {
+            mu: MU,
+            pos: DVec3::ZERO,
+        }]
+    }
 
     #[test]
     fn station_keep_holds_radius() {
         let vc = (MU / RAD).sqrt();
-        let (mut p, mut v) = (DVec3::new(0.92 * RAD, 0.0, 0.0), DVec3::new(0.0, vc * 0.97, 0.0));
+        let (mut p, mut v) = (
+            DVec3::new(0.92 * RAD, 0.0, 0.0),
+            DVec3::new(0.0, vc * 0.97, 0.0),
+        );
         for _ in 0..40_000 {
             let th = clamp(station_keep(p, v, MU, RAD), MAXA);
             verlet_step(&mut p, &mut v, &src(), th, 0.05);
@@ -189,6 +217,10 @@ mod tests {
         }
         assert!((p - target).length() < 0.02 * RAD, "didn't arrive: {p:?}");
         assert!(v.length() < 50.0, "didn't stop, v = {}", v.length());
-        assert!(r_min > 0.9 * RAD, "left the shell (dipped to {:.3}R)", r_min / RAD);
+        assert!(
+            r_min > 0.9 * RAD,
+            "left the shell (dipped to {:.3}R)",
+            r_min / RAD
+        );
     }
 }

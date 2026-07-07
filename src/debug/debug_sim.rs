@@ -4,11 +4,11 @@
 
 use bevy::prelude::*;
 
-use crate::sim::clock::SimClock;
-use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit, OrbitPropagationCache};
-use crate::sim::integrate::{Propulsion, StateVec, ThrustCommand};
-use crate::sim::guidance::Guidance;
 use super::DebugUi;
+use crate::sim::clock::SimClock;
+use crate::sim::guidance::Guidance;
+use crate::sim::integrate::{Propulsion, StateVec, ThrustCommand};
+use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit, OrbitPropagationCache};
 
 // B: queue a small prograde test burn on every ship at the current time.
 pub fn debug_burn_key(
@@ -16,7 +16,9 @@ pub fn debug_burn_key(
     clock: Res<SimClock>,
     mut ships: Query<(&Orbit, &mut Maneuvers)>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyB) { return; }
+    if !keys.just_pressed(KeyCode::KeyB) {
+        return;
+    }
     for (orbit, mut maneuvers) in &mut ships {
         let t = clock.t;
         let v = orbit.elements.velocity_at(t);
@@ -38,7 +40,9 @@ pub fn debug_toggle_powered(
     flying: Query<&StateVec, With<Maneuvers>>,
     bodies: Query<&Body>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyP) { return; }
+    if !keys.just_pressed(KeyCode::KeyP) {
+        return;
+    }
     let Some(e) = debug.selected else { return };
 
     if let Ok(orbit) = coasting.get(e) {
@@ -48,15 +52,22 @@ pub fn debug_toggle_powered(
         let max_accel = (4.0 * mu / (r * r)).max(1.0); // authority over local gravity
         commands.entity(e).remove::<Orbit>().insert((
             StateVec::from_orbit(orbit, clock.t),
-            Propulsion { max_accel, throttle: 1.0 },
+            Propulsion {
+                max_accel,
+                throttle: 1.0,
+            },
             ThrustCommand::default(),
             Guidance::Idle,
         ));
         orbit_cache.dirty = true;
         info!("ship {e:?} -> POWERED (max_accel {max_accel:.1})");
     } else if let Ok(sv) = flying.get(e) {
-        let Ok(body) = bodies.get(sv.frame) else { return };
-        commands.entity(e).remove::<(StateVec, ThrustCommand, Guidance)>()
+        let Ok(body) = bodies.get(sv.frame) else {
+            return;
+        };
+        commands
+            .entity(e)
+            .remove::<(StateVec, ThrustCommand, Guidance)>()
             .insert(Orbit::park_from_statevec(sv, body.mu, body.radius, clock.t));
         orbit_cache.dirty = true;
         info!("ship {e:?} -> COAST");
@@ -73,8 +84,21 @@ pub fn debug_guidance_keys(
     mut q: Query<(&StateVec, &mut Guidance)>,
 ) {
     let Some(e) = debug.selected else { return };
-    let Ok((sv, mut g)) = q.get_mut(e) else { return };
-    if keys.just_pressed(KeyCode::KeyK) { *g = Guidance::StationKeep { radius: sv.pos.length() }; info!("StationKeep"); }
-    if keys.just_pressed(KeyCode::KeyH) { *g = Guidance::Hold; info!("Hold"); }
-    if keys.just_pressed(KeyCode::KeyI) { *g = Guidance::Idle; info!("Idle"); }
+    let Ok((sv, mut g)) = q.get_mut(e) else {
+        return;
+    };
+    if keys.just_pressed(KeyCode::KeyK) {
+        *g = Guidance::StationKeep {
+            radius: sv.pos.length(),
+        };
+        info!("StationKeep");
+    }
+    if keys.just_pressed(KeyCode::KeyH) {
+        *g = Guidance::Hold;
+        info!("Hold");
+    }
+    if keys.just_pressed(KeyCode::KeyI) {
+        *g = Guidance::Idle;
+        info!("Idle");
+    }
 }

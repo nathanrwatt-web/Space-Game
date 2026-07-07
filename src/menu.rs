@@ -1,9 +1,9 @@
-// egui UI for the start screen  and the pause menu 
-// only writes current level and world or changes game state  / app mode 
+// egui UI for the start screen  and the pause menu
+// only writes current level and world or changes game state  / app mode
 
-use bevy::prelude::*;
 use bevy::app::AppExit;
-use bevy_egui::{egui, EguiContexts};
+use bevy::prelude::*;
+use bevy_egui::{EguiContexts, egui};
 
 use crate::game_state::{AppMode, GameState};
 use crate::worlds::{self, CurrentWorld};
@@ -17,11 +17,11 @@ pub fn start_screen(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Start Menu")
-        // turn the next three to true for small window use 
-        .title_bar(false) 
+        // turn the next three to true for small window use
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO) // makes window immovable, centers it 
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO) // makes window immovable, centers it
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Orbital");
@@ -71,9 +71,15 @@ pub fn pause_menu(
             ui.vertical_centered(|ui| {
                 ui.heading("Paused");
                 ui.add_space(8.0);
-                if ui.button("Resume").clicked() { next.set(GameState::Running); }
-                if ui.button("Save").clicked() { next.set(GameState::Saving); }
-                if ui.button("Main Menu").clicked() { app_next.set(AppMode::Menu); }
+                if ui.button("Resume").clicked() {
+                    next.set(GameState::Running);
+                }
+                if ui.button("Save").clicked() {
+                    next.set(GameState::Saving);
+                }
+                if ui.button("Main Menu").clicked() {
+                    app_next.set(AppMode::Menu);
+                }
             });
         });
     Ok(())

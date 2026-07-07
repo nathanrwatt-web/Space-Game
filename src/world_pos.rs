@@ -1,19 +1,19 @@
 // WorldPos it the basic type system
-// For absolute coordinates f64 is used as well as for translation 
-// WorldPos is converted to a vector of f32 for camera rendering 
+// For absolute coordinates f64 is used as well as for translation
+// WorldPos is converted to a vector of f32 for camera rendering
 // The accuracy of math is kept high and only for the camera do we loose accuracy
 //
 // Since f64 has 11 bits for exponent and 52 for sigfig.,
-// if we want to be precise down to .01, this leaves 
+// if we want to be precise down to .01, this leaves
 // 45 bits of sig-fig for distance or else  2^45 ~ 1.75e13.
-// this is 17.5 billion km 
+// this is 17.5 billion km
 //
-// The planetary size of our solar system is only about 9 billion km 
-// so this is well enough accuracy for planetary shenanigans. 
+// The planetary size of our solar system is only about 9 billion km
+// so this is well enough accuracy for planetary shenanigans.
 
+use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::math::{DVec3};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // include component for ECS (enttiy, component, system)
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ impl WorldPos {
     pub const ORIGIN: Self = WorldPos(DVec3::ZERO);
 
     pub fn new(x: f64, y: f64, z: f64) -> Self {
-        Self(DVec3::new(x,y,z))
+        Self(DVec3::new(x, y, z))
     }
 
     fn translate(self, delta: DVec3) -> Self {
@@ -36,8 +36,8 @@ impl WorldPos {
         other.0 - self.0
     }
 
-    // where to draw this relative to the camera 
-    // Needs f32 for rendering 
+    // where to draw this relative to the camera
+    // Needs f32 for rendering
     pub fn to_render_space(self, camera: WorldPos) -> Vec3 {
         (self.0 - camera.0).as_vec3()
     }
@@ -47,10 +47,10 @@ impl WorldPos {
 mod tests {
     use super::*;
 
-    const FAR: f64 = 4.5e12; 
-    const MAX_DIST: f64 = 1.05e13;   // farthest gameplay point (~Pluto–Uranus span)
-    const RESOLVE:  f64 = 1.0;       // smallest move we still want to see
-    const TOLERANCE: f32 = 0.01;     // how far off the rendered offset may be (1 cm)
+    const FAR: f64 = 4.5e12;
+    const MAX_DIST: f64 = 1.05e13; // farthest gameplay point (~Pluto–Uranus span)
+    const RESOLVE: f64 = 1.0; // smallest move we still want to see
+    const TOLERANCE: f32 = 0.01; // how far off the rendered offset may be (1 cm)
 
     #[test]
     fn translate_and_delta_are_exact_near_origin() {
@@ -67,7 +67,7 @@ mod tests {
     fn camera_at_origin_is_identity_downcast() {
         let p = WorldPos::new(123.0, 456.0, 789.0);
         let r = p.to_render_space(WorldPos::ORIGIN);
-        assert_eq!(r, Vec3::new(123.0,456.0,789.0));
+        assert_eq!(r, Vec3::new(123.0, 456.0, 789.0));
     }
 
     #[test]
@@ -78,7 +78,10 @@ mod tests {
 
         let err = (r - Vec3::new(100.0, 0.0, 0.0)).length();
 
-        assert!( err < 0.01, "expected ~100m offset preserved, got {r:?} (err {err} m)");
+        assert!(
+            err < 0.01,
+            "expected ~100m offset preserved, got {r:?} (err {err} m)"
+        );
     }
 
     #[test]
@@ -86,10 +89,10 @@ mod tests {
         let body_a = DVec3::new(FAR, FAR, FAR);
         let body_b = body_a + DVec3::new(100.0, 0.0, 0.0);
 
-        let naive = body_b.as_vec3() -  body_a.as_vec3();
+        let naive = body_b.as_vec3() - body_a.as_vec3();
 
         let err = (naive - Vec3::new(100.0, 0.0, 0.0)).length();
-        assert!( err > 1.0, "naive f32 was unexpectedly accurate ({naive:?})");
+        assert!(err > 1.0, "naive f32 was unexpectedly accurate ({naive:?})");
     }
 
     #[test]
@@ -108,7 +111,7 @@ mod tests {
         assert_eq!(p.translate(d1).translate(d2), p.translate(d2).translate(d1));
         assert_eq!(p.translate(d1).translate(d2), p.translate(d1 + d2));
     }
- 
+
     #[test]
     fn delta_round_trips_through_translate() {
         let a = WorldPos::new(FAR, FAR * 0.5, -FAR);
@@ -118,14 +121,16 @@ mod tests {
 
     #[test]
     fn a_meter_scale_move_survives_at_world_edge() {
-        let cam     = WorldPos::new(MAX_DIST, MAX_DIST, MAX_DIST);
-        let target  = cam.translate(DVec3::new(RESOLVE, 0.0, 0.0));
-        let r       = target.to_render_space(cam);
-        let err     = (r - Vec3::new(RESOLVE as f32, 0.0, 0.0)).length();
+        let cam = WorldPos::new(MAX_DIST, MAX_DIST, MAX_DIST);
+        let target = cam.translate(DVec3::new(RESOLVE, 0.0, 0.0));
+        let r = target.to_render_space(cam);
+        let err = (r - Vec3::new(RESOLVE as f32, 0.0, 0.0)).length();
 
-        assert!(err < TOLERANCE,
+        assert!(
+            err < TOLERANCE,
             "a {RESOLVE} m move at {MAX_DIST:e} m came back off by {err} m (budget {TOLERANCE} m) — \
-             MAX_DIST has outgrown f64");
+             MAX_DIST has outgrown f64"
+        );
     }
 
     #[test]
@@ -133,11 +138,17 @@ mod tests {
         let cam = WorldPos::new(MAX_DIST, MAX_DIST, MAX_DIST);
         // f64 grid spacing here is 2^-9 m ≈ 1.95 mm. Below it, a move literally cannot exist.
         let sub_grid = cam.translate(DVec3::new(0.0005, 0.0, 0.0)); // 0.5 mm < spacing
-        assert_eq!(sub_grid.to_render_space(cam), Vec3::ZERO,
-            "a sub-grid move does not vanish entirely, unexpected precision");
+        assert_eq!(
+            sub_grid.to_render_space(cam),
+            Vec3::ZERO,
+            "a sub-grid move does not vanish entirely, unexpected precision"
+        );
         // Comfortably above the spacing, the move is preserved
         let above = cam.translate(DVec3::new(0.05, 0.0, 0.0)); // 50 mm move 
         let off = (above.to_render_space(cam).x - 0.05).abs();
-        assert!(off < 0.002, "above-grid move drifted {off} m (spacing ≈ 0.002 m)");
+        assert!(
+            off < 0.002,
+            "above-grid move drifted {off} m (spacing ≈ 0.002 m)"
+        );
     }
 }

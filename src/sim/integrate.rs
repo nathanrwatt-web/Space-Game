@@ -1,10 +1,10 @@
-use bevy::prelude::*;
 use bevy::math::DVec3;
-use serde::{Serialize, Deserialize};
+use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::sim::clock::SimClock;
-use crate::sim::orbit::Body;
 use crate::sim::guidance::{Guidance, hold, move_to, station_keep};
+use crate::sim::orbit::Body;
 
 // Fixed physics step, in *sim seconds*.
 pub(crate) const PHYS_DT: f64 = 1.0 / 30.0;
@@ -14,21 +14,25 @@ pub(crate) const MAX_SUBSTEPS: u32 = 512;
 #[derive(Component, Clone, Copy, Debug)]
 pub struct StateVec {
     pub pos: DVec3,
-    pub vel: DVec3,     
-    pub frame: Entity,  // frame of reference body 
+    pub vel: DVec3,
+    pub frame: Entity, // frame of reference body
 }
 
 impl StateVec {
     pub fn from_orbit(orbit: &crate::sim::orbit::Orbit, t: f64) -> Self {
         let (pos, vel) = orbit.elements.state_vectors_at(t);
-        Self { pos, vel, frame: orbit.parent }
+        Self {
+            pos,
+            vel,
+            frame: orbit.parent,
+        }
     }
 }
 
 #[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Propulsion {
     pub max_accel: f64,
-    pub throttle:  f64,  // ie how much gas is on the pedal
+    pub throttle: f64, // ie how much gas is on the pedal
 }
 
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -36,7 +40,7 @@ pub struct ThrustCommand {
     pub accel: DVec3,
 }
 
-// here for eventual N-body, integration will (hopefully) take multiple of these 
+// here for eventual N-body, integration will (hopefully) take multiple of these
 #[derive(Clone, Copy, Debug)]
 pub struct GravitySource {
     pub mu: f64,
@@ -57,9 +61,9 @@ pub(crate) fn gravity(sources: &[GravitySource], pos: DVec3) -> DVec3 {
     a
 }
 
-// verlet integration 
+// verlet integration
 /*
-From wikipedia: 
+From wikipedia:
         Vec3d new_pos = pos + vel*dt + acc*(dt*dt*0.5);
         Vec3d new_acc = apply_forces();
         Vec3d new_vel = vel + (acc+new_acc)*(dt*0.5);
@@ -67,9 +71,13 @@ From wikipedia:
         vel = new_vel;
         acc = new_acc;
 */
-pub(crate) fn verlet_step( pos: &mut DVec3, vel: &mut DVec3,
-    sources: &[GravitySource], thrust: DVec3, dt: f64 ) 
-{
+pub(crate) fn verlet_step(
+    pos: &mut DVec3,
+    vel: &mut DVec3,
+    sources: &[GravitySource],
+    thrust: DVec3,
+    dt: f64,
+) {
     let a0 = gravity(sources, *pos) + thrust;
     *pos += *vel * dt + 0.5 * a0 * dt * dt;
     let a1 = gravity(sources, *pos) + thrust;
@@ -79,7 +87,11 @@ pub(crate) fn verlet_step( pos: &mut DVec3, vel: &mut DVec3,
 // clamp a desired acceleration to the craft's thrust limit
 fn clamp_accel(a: DVec3, limit: f64) -> DVec3 {
     let mag = a.length();
-    if mag > limit && mag > 0.0 { a * (limit / mag) } else { a }
+    if mag > limit && mag > 0.0 {
+        a * (limit / mag)
+    } else {
+        a
+    }
 }
 
 #[derive(Resource, Default)]
@@ -93,7 +105,7 @@ pub(crate) fn max_powered_frame_budget() -> f64 {
     PHYS_DT * MAX_SUBSTEPS as f64
 }
 
-// integrate currently powered ships 
+// integrate currently powered ships
 pub fn integrate_powered(
     clock: Res<SimClock>,
     mut acc: ResMut<PhysAccumulator>,
@@ -123,11 +135,13 @@ pub fn integrate_powered(
     acc.pending = (acc.pending + dt_total).min(max_powered_frame_budget());
     while acc.pending >= PHYS_DT {
         for (mut sv, prop, guidance, mut cmd) in &mut ships {
-            let Ok(body) = bodies.get(sv.frame) else { continue };
+            let Ok(body) = bodies.get(sv.frame) else {
+                continue;
+            };
             let mu = body.mu;
             let sources = [GravitySource {
                 mu,
-                pos: DVec3::ZERO // sits at the center of the local frame
+                pos: DVec3::ZERO, // sits at the center of the local frame
             }];
 
             // Guidance is sampled once per fixed step so arrival behavior stays stable
@@ -160,7 +174,10 @@ mod tests {
     const MU: f64 = 1.267e17; // ~Jupiter G·M (m³/s²)
 
     fn one_source(mu: f64) -> [GravitySource; 1] {
-        [GravitySource { mu, pos: DVec3::ZERO }]
+        [GravitySource {
+            mu,
+            pos: DVec3::ZERO,
+        }]
     }
 
     #[test]
@@ -174,8 +191,14 @@ mod tests {
     #[test]
     fn gravity_sums_over_sources() {
         let s = [
-            GravitySource { mu: MU, pos: DVec3::new(-1.0e7, 1.0e7, 0.0) },
-            GravitySource { mu: MU, pos: DVec3::new( 1.0e7, 1.0e7, 0.0) },
+            GravitySource {
+                mu: MU,
+                pos: DVec3::new(-1.0e7, 1.0e7, 0.0),
+            },
+            GravitySource {
+                mu: MU,
+                pos: DVec3::new(1.0e7, 1.0e7, 0.0),
+            },
         ];
         let a = gravity(&s, DVec3::ZERO);
         assert!(a.x.abs() < 1e-3, "x should cancel, got {}", a.x);

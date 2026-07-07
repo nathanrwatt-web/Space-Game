@@ -1,14 +1,14 @@
-// For the command line log in game 
-// Should essentially mirror the log in bevy 
+// For the command line log in game
+// Should essentially mirror the log in bevy
 // For now completely AI generated, needs to be reviewed in depth
 
-use bevy::prelude::*;
-use bevy::log::{BoxedLayer, Level};
-use bevy::log::tracing::{Event, Subscriber};
 use bevy::log::tracing::field::{Field, Visit};
+use bevy::log::tracing::{Event, Subscriber};
 use bevy::log::tracing_subscriber::Layer;
 use bevy::log::tracing_subscriber::layer::Context;
-use bevy_egui::{egui, EguiContexts};
+use bevy::log::{BoxedLayer, Level};
+use bevy::prelude::*;
+use bevy_egui::{EguiContexts, egui};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +44,10 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
                 if buf.len() >= MAX_LINES {
                     buf.pop_front();
                 }
-                buf.push_back(LogLine { level: *event.metadata().level(), msg });
+                buf.push_back(LogLine {
+                    level: *event.metadata().level(),
+                    msg,
+                });
             }
         }
     }
@@ -63,7 +66,6 @@ pub struct LogWindow {
     pub open: bool,
 }
 
-
 pub fn log_panel(
     mut contexts: EguiContexts,
     store: Res<LogStore>,
@@ -79,13 +81,15 @@ pub fn log_panel(
         .default_width(440.0)
         .default_height(220.0)
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                if let Ok(buf) = store.0.lock() {
-                    for line in buf.iter() {
-                        ui.colored_label(color_for(line.level), line.msg.as_str());
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    if let Ok(buf) = store.0.lock() {
+                        for line in buf.iter() {
+                            ui.colored_label(color_for(line.level), line.msg.as_str());
+                        }
                     }
-                }
-            });
+                });
         });
     win.open = open;
     Ok(())

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use crate::sim::integrate::StateVec;
+use crate::sim::integrate::max_powered_frame_budget;
 
 // ==== speed settings ====
 const DAY: f64 = 60.0 * 60.0 * 24.0;
@@ -17,9 +18,6 @@ const WARP_LEVELS: [f64; 12] = [
     10.0 * DAY,
     30.0 * DAY,   // month
 ];
-
-// Highest time warp allowed while a powered craft is being integrated. 
-const POWERED_WARP_CEILING: f64 = 1.0 * DAY;
 
 #[derive(Resource)]
 pub struct SimClock {
@@ -61,14 +59,22 @@ pub fn advance_clock(time: Res<Time>, mut clock: ResMut<SimClock>) {
     clock.t += clock.warp() * time.delta_secs() as f64;
 }
 
-// While any powered craft is integrating, cap warp at POWERED_WARP_CEILING so the
-// bounded substep budget can still cover each frame (see integrate_powered). With no
-// powered craft loaded, the full warp range is available again.
-pub fn clamp_warp(mut clock: ResMut<SimClock>, powered: Query<(), With<StateVec>>) {
+// While powered craft are integrating, cap warp so a single rendered frame never
+// asks the fixed-step integrator to consume more than its bounded budget.
+pub fn clamp_warp(
+    time: Res<Time>,
+    mut clock: ResMut<SimClock>,
+    powered: Query<(), With<StateVec>>,
+) {
     let max = if powered.is_empty() {
         WARP_LEVELS.len() - 1
     } else {
-        WARP_LEVELS.iter().rposition(|&w| w <= POWERED_WARP_CEILING).unwrap_or(0)
+        let dt = time.delta_secs().max(f32::EPSILON) as f64;
+        let ceiling = max_powered_frame_budget() / dt;
+        WARP_LEVELS
+            .iter()
+            .rposition(|&warp| warp <= ceiling)
+            .unwrap_or(0)
     };
     clock.set_max_level(max);
 }
@@ -83,5 +89,18 @@ pub fn warp_keys(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<SimClock>) {
     if keys.just_pressed(KeyCode::BracketLeft) {
         clock.slower();
         info!("warp -> {:.0} sim-s/s", clock.warp());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn powered_frame_budget_maps_to_warp_ceiling() {
+        let dt = 1.0 / 60.0;
+        let ceiling = max_powered_frame_budget() / dt;
+        assert!(ceiling > 0.0);
+        assert!(ceiling * dt <= max_powered_frame_budget() + 1e-9);
     }
 }

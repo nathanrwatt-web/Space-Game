@@ -25,5 +25,8 @@ pub mod integrate;
 // what the ship is doing with thrust 
 pub mod guidance;
 
-// cell handling for frame calculations 
-pub mod broadphase; 
+// simulation-entity metadata such as render/sim tiering
+pub mod entity;
+
+// per-frame parent/sibling lookup helpers
+pub mod broadphase;

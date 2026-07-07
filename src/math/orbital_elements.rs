@@ -116,8 +116,7 @@ impl OrbitalElements {
             0.0
         };
 
-        // circular orbits have e ≈ 0 ⇒ e_vec direction is meaningless and dividing by it
-        // yields NAN
+        // what if eccentricity is 0?
         const CIRC_EPS: f64 = 1e-11;
 
         let (lan, arg_pe) = if node_mag > 1e-9 {

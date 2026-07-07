@@ -1,10 +1,10 @@
 use bevy::prelude::*;
 use bevy::math::DVec3;
+use serde::{Deserialize, Serialize};
 
 use crate::sim::{
-    clock::SimClock,
-    orbit::{Orbit, Body},
-    integrate::{Propulsion, StateVec, ThrustCommand},
+    orbit::Orbit,
+    integrate::StateVec,
 };
 
 pub(crate) const CTRL_W: f64 = 0.1;
@@ -18,7 +18,7 @@ pub(crate) const CTRL_W: f64 = 0.1;
 const MOVE_CRUISE_FACTOR: f64 = 1.2;
 const ARRIVE_EPS: f64 = 1.0;
 
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub enum Guidance{
     #[default]
     Idle, 
@@ -53,6 +53,7 @@ pub(crate) fn hold(pos: DVec3, vel: DVec3, mu: f64) -> DVec3 {
 }
 
 // pursuit towards a target position 
+#[allow(dead_code)]
 pub(crate) fn seek(pos: DVec3, vel: DVec3, target_pos: DVec3, target_vel: DVec3) -> DVec3 {
     let rel = target_pos - pos; 
     let rel_v = target_vel - vel;
@@ -107,35 +108,9 @@ pub(crate) fn move_to(pos: DVec3, vel: DVec3, mu: f64, target: DVec3, max_accel:
     rt * r_hat + a_tan
 }
 
-// apply what is happening
-pub fn apply_guidance(
-    clock: Res<SimClock>,
-    bodies: Query<&Body>,
-    statevecs: Query<&StateVec>,
-    orbits: Query<&Orbit>,
-    mut ships: Query<(&StateVec, &Guidance, &Propulsion, &mut ThrustCommand)>,
-) {
-    let t = clock.t;
-    for (sv, guidance, prop, mut cmd) in &mut ships {
-        let Ok(body) = bodies.get(sv.frame) else { cmd.accel = DVec3::ZERO; continue };
-        let mu = body.mu;
-        cmd.accel = match *guidance{
-            Guidance::Idle => DVec3::ZERO,
-            Guidance::Hold => hold(sv.pos, sv.vel, mu),
-            Guidance::StationKeep { radius } => station_keep(sv.pos, sv.vel, mu, radius),
-            Guidance::Seek { target } => {
-                match target_local_state(target, sv.frame, t, &statevecs, &orbits) {
-                    Some((tp, tv)) => seek(sv.pos, sv.vel, tp, tv),
-                    None => DVec3::ZERO,
-                }
-            }
-            Guidance::MoveTo { target } => move_to(sv.pos, sv.vel, mu, target, prop.max_accel),
-        };
-    }
-}
-
 // targets (pos, vel) in frames local coords 
-fn target_local_state(
+#[allow(dead_code)]
+pub(crate) fn target_local_state(
     target: Entity, frame: Entity, t: f64, 
     statevecs: &Query<&StateVec>, orbits: &Query<&Orbit>,
 ) -> Option<(DVec3, DVec3)> {
@@ -217,4 +192,3 @@ mod tests {
         assert!(r_min > 0.9 * RAD, "left the shell (dipped to {:.3}R)", r_min / RAD);
     }
 }
-

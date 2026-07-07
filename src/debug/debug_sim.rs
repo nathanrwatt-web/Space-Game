@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 
 use crate::sim::clock::SimClock;
-use crate::sim::orbit::{Orbit, Body, Maneuvers, Burn};
+use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit, OrbitPropagationCache};
 use crate::sim::integrate::{Propulsion, StateVec, ThrustCommand};
 use crate::sim::guidance::Guidance;
 use super::DebugUi;
@@ -27,10 +27,12 @@ pub fn debug_burn_key(
 
 // P: flip the selected ship between on-rails coast and powered integration.
 // Power-up grants 4× local-gravity authority so Hold/StationKeep are feasible.
+#[allow(clippy::too_many_arguments)]
 pub fn debug_toggle_powered(
     keys: Res<ButtonInput<KeyCode>>,
     debug: Res<DebugUi>,
     clock: Res<SimClock>,
+    mut orbit_cache: ResMut<OrbitPropagationCache>,
     mut commands: Commands,
     coasting: Query<&Orbit, With<Maneuvers>>,
     flying: Query<&StateVec, With<Maneuvers>>,
@@ -50,11 +52,13 @@ pub fn debug_toggle_powered(
             ThrustCommand::default(),
             Guidance::Idle,
         ));
+        orbit_cache.dirty = true;
         info!("ship {e:?} -> POWERED (max_accel {max_accel:.1})");
     } else if let Ok(sv) = flying.get(e) {
         let Ok(body) = bodies.get(sv.frame) else { return };
         commands.entity(e).remove::<(StateVec, ThrustCommand, Guidance)>()
             .insert(Orbit::park_from_statevec(sv, body.mu, body.radius, clock.t));
+        orbit_cache.dirty = true;
         info!("ship {e:?} -> COAST");
     }
 }

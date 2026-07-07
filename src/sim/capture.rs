@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use crate::sim::clock::SimClock;
-use crate::sim::orbit::Orbit;
+use crate::sim::orbit::{Orbit, OrbitPropagationCache};
 use crate::math::orbital_elements::OrbitalElements;
 
 
@@ -14,6 +14,7 @@ pub struct ScheduledCapture {
 
 pub fn execute_capture(
     clock: Res<SimClock>,
+    mut orbit_cache: ResMut<OrbitPropagationCache>,
     mut commands: Commands, 
     mut ships: Query<(Entity, &mut Orbit, &ScheduledCapture)>,
 ) {
@@ -21,6 +22,7 @@ pub fn execute_capture(
         if clock.t >= cap.execute_at {
             orbit.parent = cap.parent;
             orbit.elements = cap.elements;
+            orbit_cache.dirty = true;
             commands.entity(entity).remove::<ScheduledCapture>();
         }
     }

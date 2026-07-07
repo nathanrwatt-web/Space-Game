@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use bevy::math::DVec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::sim::clock::SimClock;
+use crate::sim::entity::SimEntity;
 use crate::world_pos::WorldPos;
 use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::integrate::StateVec;
@@ -35,7 +36,7 @@ impl Orbit {
 
         // circularize at the current radius, keeping the ship's heading if it has one
         let r = sv.pos.length();
-        if !(r > 0.0) {
+        if r <= 0.0 {
             return natural; // at the body centre; nothing sensible to do
         }
         let r_hat = sv.pos / r;
@@ -72,6 +73,23 @@ pub struct Body {
     pub radius: f64,
 }
 
+#[derive(Resource)]
+pub struct OrbitPropagationCache {
+    pub dirty: bool,
+    order: Vec<Entity>,
+    states: HashMap<Entity, (DVec3, DVec3)>,
+}
+
+impl Default for OrbitPropagationCache {
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            order: Vec::new(),
+            states: HashMap::new(),
+        }
+    }
+}
+
 // Operational shell radius for a body, the sphere ships move on
 pub const SHELL_FACTOR: f64 = 4.0;
 
@@ -79,44 +97,55 @@ pub fn shell_radius(body: &Body) -> f64 {
     body.radius * SHELL_FACTOR
 }
 
-#[allow(clippy::complexity)]
+#[allow(clippy::type_complexity)]
 pub fn propagate_orbits(
     clock: Res<SimClock>,
-    orbiters: Query<(Entity, &Orbit)>, // every orbiting object
-    powered: Query<(Entity, &StateVec)>,
-    roots: Query<(Entity, &WorldPos), (Without<Orbit>, Without<StateVec>)>,
-    mut writeback: Query<(Entity, &mut WorldPos), Or<(With<Orbit>, With<StateVec>)>>,
+    mut cache: ResMut<OrbitPropagationCache>,
+    orbiters: Query<(Entity, &Orbit), With<SimEntity>>,
+    powered: Query<(Entity, &StateVec), With<SimEntity>>,
+    roots: Query<(Entity, &WorldPos), (With<SimEntity>, Without<Orbit>, Without<StateVec>)>,
+    mut writeback: Query<&mut WorldPos, (With<SimEntity>, Or<(With<Orbit>, With<StateVec>)>)>,
 ) {
     let t = clock.t;
-    
-    // offsets of each item to be used later 
-    let mut locals: HashMap<Entity, (DVec3, DVec3, Entity)> = orbiters
-        .iter()
-        // map each element to new (position, velocity, parent)
-        .map(|(e, o)| {
-            let (pos, vel) = o.elements.state_vectors_at(t);
-            (e, (pos, vel , o.parent))
-        })
-        .collect();
 
-    // calculate orbits for powered ship 
-    for (e, sv) in &powered {
-        locals.insert(e, (sv.pos, sv.vel, sv.frame));
+    if cache.dirty || cache.order.is_empty() {
+        rebuild_order(&mut cache, &orbiters, &roots);
     }
 
-    // position of each entity wihthout orbit
-    let root_pos: HashMap<Entity, DVec3> = roots
-        .iter()
-        // w.0 = DVec3, position 
-        .map(|(e,w)| (e, w.0))
-        .collect();
-    
-    // checking for previous computation
-    let mut cache: HashMap<Entity, (DVec3, DVec3)> = HashMap::new();
+    cache.states.clear();
+    for (entity, wp) in &roots {
+        cache.states.insert(entity, (wp.0, DVec3::ZERO));
+    }
 
-    // for each entity and its world position update its world position 
-    for (e, mut wp) in &mut writeback {
-        wp.0 = absolute_state(e, &locals, &root_pos, &mut cache).0;
+    for idx in 0..cache.order.len() {
+        let entity = cache.order[idx];
+        let Ok((_, orbit)) = orbiters.get(entity) else { continue };
+        let (local_pos, local_vel) = orbit.elements.state_vectors_at(t);
+        let (parent_pos, parent_vel) = cache
+            .states
+            .get(&orbit.parent)
+            .copied()
+            .unwrap_or((DVec3::ZERO, DVec3::ZERO));
+        let abs_pos = parent_pos + local_pos;
+        let abs_vel = parent_vel + local_vel;
+        cache.states.insert(entity, (abs_pos, abs_vel));
+        if let Ok(mut wp) = writeback.get_mut(entity) {
+            wp.0 = abs_pos;
+        }
+    }
+
+    for (entity, sv) in &powered {
+        let (parent_pos, parent_vel) = cache
+            .states
+            .get(&sv.frame)
+            .copied()
+            .unwrap_or((DVec3::ZERO, DVec3::ZERO));
+        let abs_pos = parent_pos + sv.pos;
+        let abs_vel = parent_vel + sv.vel;
+        cache.states.insert(entity, (abs_pos, abs_vel));
+        if let Ok(mut wp) = writeback.get_mut(entity) {
+            wp.0 = abs_pos;
+        }
     }
 }
 
@@ -169,29 +198,44 @@ pub fn execute_maneuvers(
     }
 }
 
-// absoulte (pos, vel) by summing local vectors up the parent chain
-pub(crate) fn absolute_state(
-    e: Entity, 
-    locals: &HashMap<Entity, (DVec3, DVec3, Entity)>, // pos, vel, parent 
-    roots: &HashMap<Entity, DVec3>, 
-    cache: &mut HashMap<Entity, (DVec3, DVec3)>,
-) -> (DVec3, DVec3) {
+#[allow(clippy::type_complexity)]
+fn rebuild_order(
+    cache: &mut OrbitPropagationCache,
+    orbiters: &Query<(Entity, &Orbit), With<SimEntity>>,
+    roots: &Query<(Entity, &WorldPos), (With<SimEntity>, Without<Orbit>, Without<StateVec>)>,
+) {
+    let mut children: HashMap<Entity, Vec<Entity>> = HashMap::new();
+    for (entity, orbit) in orbiters.iter() {
+        children.entry(orbit.parent).or_default().push(entity);
+    }
 
-    // check to see if the entity has been computed
-    if let Some(&s) = cache.get(&e) { return s; }
+    cache.order.clear();
+    let mut seen = HashSet::new();
+    for (root, _) in roots.iter() {
+        push_children(root, &children, &mut cache.order, &mut seen);
+    }
+    for (entity, _) in orbiters.iter() {
+        if seen.insert(entity) {
+            cache.order.push(entity);
+            push_children(entity, &children, &mut cache.order, &mut seen);
+        }
+    }
+    cache.dirty = false;
+}
 
-    let state = match locals.get(&e) {
-        Some(&(local_position, local_velocity, parent)) => {
-            let (parent_position, parent_velocity) = absolute_state(parent, locals, roots, cache);
-            (parent_position + local_position, parent_velocity + local_velocity)
-        },
-        None => { 
-            (roots.get(&e).copied().unwrap_or(DVec3::ZERO), DVec3::ZERO)
-        },
-    };
-
-    cache.insert(e, state);
-    state
+fn push_children(
+    parent: Entity,
+    children: &HashMap<Entity, Vec<Entity>>,
+    order: &mut Vec<Entity>,
+    seen: &mut HashSet<Entity>,
+) {
+    let Some(entries) = children.get(&parent) else { return };
+    for &child in entries {
+        if seen.insert(child) {
+            order.push(child);
+            push_children(child, children, order, seen);
+        }
+    }
 }
 
 #[cfg(test)]

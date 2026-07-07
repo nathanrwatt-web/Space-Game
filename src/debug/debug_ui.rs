@@ -6,8 +6,12 @@ use bevy_egui::{egui, EguiContexts};
 use crate::body_traits::Focusable;
 use crate::camera::OrbitCam;
 use crate::game_state::GameState;
+use crate::game_state::Appearance;
 use crate::sim::clock::SimClock;
-use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit};
+use crate::sim::entity::{SimEntity, SimulationTier};
+use crate::sim::guidance::Guidance;
+use crate::sim::integrate::{Propulsion, StateVec};
+use crate::sim::orbit::{Body, Burn, Maneuvers, Orbit, OrbitPropagationCache};
 use crate::math::orbital_elements::OrbitalElements;
 use crate::sim::soi::soi_radius;
 use crate::world_pos::WorldPos;
@@ -37,6 +41,7 @@ pub enum SpawnKind { Body, Ship }
 #[derive(Clone)]
 pub struct SpawnForm {
     pub kind: SpawnKind,
+    pub tier: SimulationTier,
     pub name: String,
     pub parent: Option<Entity>,
     pub a: f64,
@@ -55,6 +60,7 @@ impl Default for SpawnForm {
     fn default() -> Self {
         Self {
             kind: SpawnKind::Ship,
+            tier: SimulationTier::Rendered,
             name: "new".to_string(),
             parent: None,
             a: 200.0,
@@ -137,12 +143,24 @@ pub fn debug_ui(
     cam: Single<&OrbitCam, With<Camera>>,
     mut log: ResMut<LogWindow>,
     mut debug_cam: ResMut<DebugCamera>,
+    mut orbit_cache: ResMut<OrbitPropagationCache>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut entities: Query<
-        (Entity, Option<&Name>, &WorldPos, Option<&mut Orbit>, Option<&Body>, Option<&mut Maneuvers>),
-        Or<(With<Orbit>, With<Body>)>,
+        (
+            Entity,
+            Option<&Name>,
+            &WorldPos,
+            Option<&mut Orbit>,
+            Option<&StateVec>,
+            Option<&Guidance>,
+            Option<&Body>,
+            Option<&mut Maneuvers>,
+            Option<&Appearance>,
+            Option<&SimulationTier>,
+        ),
+        With<SimEntity>,
     >,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -154,9 +172,15 @@ pub fn debug_ui(
     // ---- list labels + candidate parents (read-only, before the closure) ----
     let mut items: Vec<(Entity, String)> = Vec::new();
     let mut parents: Vec<(Entity, String)> = Vec::new();
-    for (e, name, _wp, orbit, body, maneuvers) in &entities {
+    for (e, name, _wp, orbit, statevec, _guidance, body, maneuvers, _appearance, _tier) in &entities {
         let base = name.map(|n| n.as_str().to_string()).unwrap_or_else(|| format!("{e:?}"));
-        let tag = if maneuvers.is_some() { "ship" } else if orbit.is_some() { "body" } else { "root" };
+        let tag = if maneuvers.is_some() {
+            "ship"
+        } else if orbit.is_some() || statevec.is_some() {
+            "body"
+        } else {
+            "root"
+        };
         items.push((e, format!("{base}  [{tag}]")));
         if body.is_some() {
             parents.push((e, base)); // a parent must have mass (Body) to give the child its mu
@@ -171,11 +195,12 @@ pub fn debug_ui(
     let mut sel_queue: Vec<(f64, DVec3)> = Vec::new();
 
     if let Some(sel) = selected {
-        if let Ok((e, name, wp, orbit, body, maneuvers)) = entities.get(sel) {
+        if let Ok((e, name, wp, orbit, statevec, guidance, body, maneuvers, _appearance, tier)) = entities.get(sel) {
             sel_is_ship = maneuvers.is_some();
             let label = name.map(|n| n.as_str().to_string()).unwrap_or_else(|| format!("{e:?}"));
             detail.push(format!("=== {label} ==="));
             detail.push(format!("pos = ({:.2}, {:.2}, {:.2})", wp.0.x, wp.0.y, wp.0.z));
+            detail.push(format!("tier = {:?}", tier.copied().unwrap_or_default()));
 
             if let Some(b) = body {
                 detail.push(format!("mu  = {:.4e}", b.mu));
@@ -195,16 +220,33 @@ pub fn debug_ui(
                 detail.push(format!("vis-viva |v| = {:.6}    Δ = {:.2e}", visviva, (v - visviva).abs()));
 
                 let parent_label = entities.get(o.parent).ok()
-                    .map(|(pe, pn, _, _, _, _)| pn.map(|n| n.as_str().to_string()).unwrap_or_else(|| format!("{pe:?}")))
+                    .map(|(pe, pn, _, _, _, _, _, _, _, _)| pn.map(|n| n.as_str().to_string()).unwrap_or_else(|| format!("{pe:?}")))
                     .unwrap_or_else(|| "<root>".to_string());
                 detail.push(format!("parent = {parent_label}"));
 
                 if let Some(b) = body {
                     detail.push(format!("own SOI radius = {:.3}", soi_radius(el.a, b.mu, el.mu)));
                 }
-                if let Ok((_, _, _, Some(po), Some(pb), _)) = entities.get(o.parent) {
+                if let Ok((_, _, _, Some(po), _, _, Some(pb), _, _, _)) = entities.get(o.parent) {
                     let p_soi = soi_radius(po.elements.a, pb.mu, po.elements.mu);
                     detail.push(format!("parent SOI = {:.3}    edge in {:.3}", p_soi, p_soi - r));
+                }
+            }
+            if orbit.is_none()
+                && let Some(sv) = statevec
+            {
+                sel_state = Some((sv.pos, sv.vel));
+                let frame_label = entities
+                    .get(sv.frame)
+                    .ok()
+                    .map(|(pe, pn, _, _, _, _, _, _, _, _)| {
+                        pn.map(|n| n.as_str().to_string()).unwrap_or_else(|| format!("{pe:?}"))
+                    })
+                    .unwrap_or_else(|| "<root>".to_string());
+                detail.push(format!("powered frame = {frame_label}"));
+                detail.push(format!("local |r| = {:.3}    |v| = {:.6}", sv.pos.length(), sv.vel.length()));
+                if let Some(g) = guidance {
+                    detail.push(format!("guidance = {g:?}"));
                 }
             }
             if let Some(m) = maneuvers {
@@ -295,11 +337,15 @@ pub fn debug_ui(
 
     // ---- Spawn tool ----
     if spawn_open {
-        // TODO: add propulsion to spawned ships
         egui::Window::new("Spawn").open(&mut spawn_open).default_width(280.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut sf.kind, SpawnKind::Ship, "Ship");
                 ui.selectable_value(&mut sf.kind, SpawnKind::Body, "Body");
+            });
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut sf.tier, SimulationTier::Rendered, "Rendered");
+                ui.selectable_value(&mut sf.tier, SimulationTier::Local, "Local");
+                ui.selectable_value(&mut sf.tier, SimulationTier::Background, "Background");
             });
             ui.horizontal(|ui| { ui.label("name"); ui.text_edit_singleline(&mut sf.name); });
 
@@ -365,7 +411,9 @@ pub fn debug_ui(
                 }
 
                 // --- manual burn ---
-                if let Some((r_vec, v_vec)) = sel_state {
+                if sel_el.is_some()
+                    && let Some((r_vec, v_vec)) = sel_state
+                {
                     ui.separator();
                     ui.label("manual burn");
                     ui.horizontal_wrapped(|ui| {
@@ -465,7 +513,7 @@ pub fn debug_ui(
 
     // ---- writes burn the closure ---
     if let Some(target) = selected && (pending.is_some() || clear_queue || remove_index.is_some()) 
-        && let Ok((.., Some(mut man))) = entities.get_mut(target) {
+        && let Ok((_, _, _, _, _, _, _, Some(mut man), _, _)) = entities.get_mut(target) {
             if let Some(dv) = pending {
                 man.queue.push_back(Burn { execute_at: t, dv });
             }
@@ -478,7 +526,7 @@ pub fn debug_ui(
         }
 
     if do_spawn && let Some(parent) = sf.parent &&
-        let Ok((_, _, _, _, Some(pbody), _)) = entities.get(parent) {
+        let Ok((_, _, _, _, _, _, Some(pbody), _, _, _)) = entities.get(parent) {
             let parent_mu = pbody.mu;
             let elements = OrbitalElements {
                 a: sf.a,
@@ -490,27 +538,37 @@ pub fn debug_ui(
                 epoch: t,                 // warp-correct, exactly like a burn
                 mu: parent_mu,            // child's mu = parent's G·M (the invariant)
             };
-            let mesh = meshes.add(Sphere::new(sf.mesh_radius));
-            let material = materials.add(Color::srgb(sf.color[0], sf.color[1], sf.color[2]));
+            let appearance = Appearance::Sphere { radius: sf.mesh_radius, color: sf.color };
             let mut ec = commands.spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
-                Transform::default(),
+                SimEntity,
+                sf.tier,
                 WorldPos::ORIGIN,
                 Name::new(sf.name.clone()),
                 Focusable::default(),
                 Orbit { elements, parent },
+                appearance.clone(),
             ));
+            if sf.tier != SimulationTier::Background {
+                let mesh = meshes.add(Sphere::new(sf.mesh_radius));
+                let material = materials.add(Color::srgb(sf.color[0], sf.color[1], sf.color[2]));
+                ec.insert((Mesh3d(mesh), MeshMaterial3d(material), Transform::default()));
+            }
             match sf.kind {
                 SpawnKind::Body => { ec.insert(Body { mu: sf.mu, radius: sf.mesh_radius as f64 }); }
-                SpawnKind::Ship => { ec.insert(Maneuvers::default()); }
+                SpawnKind::Ship => {
+                    ec.insert((
+                        Maneuvers::default(),
+                        Propulsion { max_accel: 1.0, throttle: 1.0 },
+                    ));
+                }
             }
+            orbit_cache.dirty = true;
     }
 
     // write edited elements back to the selected entity (uses the displayed selection,
     // before any click below reassigns it)
     if el_changed && let Some(target) = selected && let Some(new_el) = edit_el
-        && let Ok((.., Some(mut orbit), _, _)) = entities.get_mut(target) {
+        && let Ok((_, _, _, Some(mut orbit), _, _, _, _, _, _)) = entities.get_mut(target) {
             orbit.elements = new_el;
         }
 

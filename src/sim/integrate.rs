@@ -4,12 +4,12 @@ use serde::{Serialize, Deserialize};
 
 use crate::sim::clock::SimClock;
 use crate::sim::orbit::Body;
-use crate::sim::guidance::{Guidance, hold, station_keep, move_to};
+use crate::sim::guidance::{Guidance, hold, move_to, station_keep};
 
 // Fixed physics step, in *sim seconds*.
 pub(crate) const PHYS_DT: f64 = 1.0 / 30.0;
 // Guidance is re-evaluated every substep, so substeps must stay small, but also bounded
-const MAX_SUBSTEPS: u32 = 512;
+pub(crate) const MAX_SUBSTEPS: u32 = 512;
 
 #[derive(Component, Clone, Copy, Debug)]
 pub struct StateVec {
@@ -85,7 +85,12 @@ fn clamp_accel(a: DVec3, limit: f64) -> DVec3 {
 #[derive(Resource, Default)]
 pub struct PhysAccumulator {
     last_t: f64,
+    pending: f64,
     initialized: bool,
+}
+
+pub(crate) fn max_powered_frame_budget() -> f64 {
+    PHYS_DT * MAX_SUBSTEPS as f64
 }
 
 // integrate currently powered ships 
@@ -95,21 +100,28 @@ pub fn integrate_powered(
     bodies: Query<&Body>,
     mut ships: Query<(&mut StateVec, &Propulsion, &Guidance, &mut ThrustCommand)>,
 ) {
-    // on first tick
+    if ships.is_empty() {
+        acc.last_t = clock.t;
+        acc.pending = 0.0;
+        acc.initialized = true;
+        return;
+    }
+
     if !acc.initialized {
         acc.last_t = clock.t;
+        acc.pending = 0.0;
         acc.initialized = true;
         return;
     }
 
     let dt_total = clock.t - acc.last_t;
-    acc.last_t = clock.t; // update last time
-    if dt_total <= 0.0 { return; } // exit early if paused
+    acc.last_t = clock.t;
+    if dt_total <= 0.0 {
+        return;
+    }
 
-    // Advance every powered craft by exactly dt_total this frame
-    let substeps = ((dt_total / PHYS_DT).ceil() as u32).clamp(1, MAX_SUBSTEPS);
-    let dt = dt_total / substeps as f64;
-    for _ in 0..substeps {
+    acc.pending = (acc.pending + dt_total).min(max_powered_frame_budget());
+    while acc.pending >= PHYS_DT {
         for (mut sv, prop, guidance, mut cmd) in &mut ships {
             let Ok(body) = bodies.get(sv.frame) else { continue };
             let mu = body.mu;
@@ -118,24 +130,25 @@ pub fn integrate_powered(
                 pos: DVec3::ZERO // sits at the center of the local frame
             }];
 
-            // guidance must be reevaluated becasue sim-seconds can be large, 
-            // causing the original order to become invalid
+            // Guidance is sampled once per fixed step so arrival behavior stays stable
+            // even when frame-time or sim warp changes.
             let limit = prop.max_accel * prop.throttle.clamp(0.0, 1.0);
             let desired = match *guidance {
                 Guidance::Idle => DVec3::ZERO,
                 Guidance::Hold => hold(sv.pos, sv.vel, mu),
                 Guidance::StationKeep { radius } => station_keep(sv.pos, sv.vel, mu, radius),
                 Guidance::MoveTo { target } => move_to(sv.pos, sv.vel, mu, target, limit),
-                Guidance::Seek { .. } => cmd.accel, // sampled once/frame by apply_guidance
+                Guidance::Seek { .. } => cmd.accel,
             };
-            let thrust = clamp_accel(desired, limit); // thrust to be applied
-            cmd.accel = thrust; // reflect the thrust actually applied
+            let thrust = clamp_accel(desired, limit);
+            cmd.accel = thrust;
 
             let (mut pos, mut vel) = (sv.pos, sv.vel);
-            verlet_step(&mut pos, &mut vel, &sources, thrust, dt); // numerically integrate
+            verlet_step(&mut pos, &mut vel, &sources, thrust, PHYS_DT);
             sv.pos = pos;
             sv.vel = vel;
         }
+        acc.pending -= PHYS_DT;
     }
 }
 
@@ -251,4 +264,3 @@ mod tests {
         );
     }
 }
-
